@@ -59,6 +59,7 @@ export type SubmitToClientPreviewResult = {
   batchMatchIds: string[];
   trackerOptions: ClientTrackerOptions;
   allowedClientStages: string[];
+  clientStageCatalog: string[];
 };
 
 /** Keep API pressure reasonable while still parallelizing bulk preview generation. */
@@ -304,5 +305,6 @@ export async function generateSubmitToClientPreview(
     batchMatchIds,
     trackerOptions,
     allowedClientStages,
+    clientStageCatalog: allowedClientStages,
   };
 }

@@ -39,6 +39,7 @@ export function useSubmitToClientModal(options?: {
   const [batchMatchIds, setBatchMatchIds] = useState<string[]>([]);
   const [trackerOptions, setTrackerOptions] = useState<ClientTrackerOptions>(CLIENT_TRACKER_OPTION_DEFAULTS);
   const [allowedClientStages, setAllowedClientStages] = useState<string[]>(DEFAULT_ALLOWED_STAGES);
+  const [clientStageCatalog, setClientStageCatalog] = useState<string[]>(DEFAULT_ALLOWED_STAGES);
   const pendingEntriesRef = useRef<BulkSubmitCandidateEntry[]>([]);
   const generateRunIdRef = useRef(0);
   const onClosed = options?.onClosed;
@@ -59,6 +60,7 @@ export function useSubmitToClientModal(options?: {
     setBatchMatchIds([]);
     setTrackerOptions(CLIENT_TRACKER_OPTION_DEFAULTS);
     setAllowedClientStages(DEFAULT_ALLOWED_STAGES);
+    setClientStageCatalog(DEFAULT_ALLOWED_STAGES);
     pendingEntriesRef.current = [];
     onClosed?.();
   }, [loading, onClosed]);
@@ -82,6 +84,7 @@ export function useSubmitToClientModal(options?: {
       setBatchMatchIds([]);
       setTrackerOptions(CLIENT_TRACKER_OPTION_DEFAULTS);
       setAllowedClientStages(DEFAULT_ALLOWED_STAGES);
+      setClientStageCatalog(DEFAULT_ALLOWED_STAGES);
       try {
         const result = await generateSubmitToClientPreview(entries);
         if (generateRunIdRef.current !== runId) return;
@@ -99,6 +102,13 @@ export function useSubmitToClientModal(options?: {
           Array.isArray(result.allowedClientStages) && result.allowedClientStages.length
             ? result.allowedClientStages
             : DEFAULT_ALLOWED_STAGES,
+        );
+        setClientStageCatalog(
+          Array.isArray(result.clientStageCatalog) && result.clientStageCatalog.length
+            ? result.clientStageCatalog
+            : Array.isArray(result.allowedClientStages) && result.allowedClientStages.length
+              ? result.allowedClientStages
+              : DEFAULT_ALLOWED_STAGES,
         );
         onSubmitted?.();
       } catch (err: unknown) {
@@ -231,8 +241,10 @@ export function useSubmitToClientModal(options?: {
       batchMatchIds={batchMatchIds}
       trackerOptions={trackerOptions}
       allowedClientStages={allowedClientStages}
+      clientStageCatalog={clientStageCatalog}
       onTrackerOptionsChange={setTrackerOptions}
       onAllowedClientStagesChange={setAllowedClientStages}
+      onClientStageCatalogChange={setClientStageCatalog}
       onClose={handleClose}
       onRetry={handleRetry}
     />

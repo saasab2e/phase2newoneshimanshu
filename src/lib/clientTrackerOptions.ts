@@ -62,7 +62,7 @@ export const CLIENT_TRACKER_OPTION_FIELDS: Array<{
     id: 'changeStage',
     label: 'Change stage',
     action: true,
-    hint: 'Choose which stages the client can pick. Shown in the preview table and on the Client tab (does not move CRM pipeline).',
+    hint: 'Pick which stages the client can choose. Shown in the preview table and Client tab (does not move CRM pipeline).',
   },
   { id: 'attachDocument', label: 'Attach document', action: true },
   { id: 'downloadFiles', label: 'Download files' },
@@ -93,7 +93,7 @@ export function allClientPreviewStageNames(
   return stages.map((s) => String(s.name || '').trim()).filter(Boolean);
 }
 
-/** Normalize recruiter-selected stage names against the fixed catalog. */
+/** Normalize recruiter-selected stage names. Keeps custom names not in the catalog. */
 export function normalizeAllowedClientStages(
   raw: unknown,
   catalog: Array<{ id: string; name: string }>,
@@ -113,9 +113,39 @@ export function normalizeAllowedClientStages(
     const key = String(item || '').trim();
     if (!key) continue;
     const lower = key.toLowerCase();
-    const name = byName.get(lower) || byId.get(lower.replace(/[\s-&]+/g, '_'));
-    if (name && !picked.includes(name)) picked.push(name);
+    const name = byName.get(lower) || byId.get(lower.replace(/[\s-&]+/g, '_')) || key;
+    if (!picked.some((p) => p.toLowerCase() === name.toLowerCase())) picked.push(name);
   }
   if (picked.length) return picked;
   return fallbackAll ? catalog.map((row) => row.name) : [];
+}
+
+export function stageIdFromName(name: string): string {
+  return (
+    String(name || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '_')
+      .replace(/^_|_$/g, '') || `STAGE_${Date.now()}`
+  );
+}
+
+/** Merge default catalog with custom / stored stage names. */
+export function mergeClientStageCatalog(
+  defaults: Array<{ id: string; name: string }>,
+  extraNames: unknown,
+): Array<{ id: string; name: string }> {
+  const catalog = defaults.map((row) => ({ id: row.id, name: row.name }));
+  const incoming = Array.isArray(extraNames)
+    ? extraNames
+    : typeof extraNames === 'string'
+      ? extraNames.split(',').map((part) => part.trim())
+      : [];
+  for (const item of incoming) {
+    const name = String(item || '').trim();
+    if (!name) continue;
+    if (catalog.some((row) => row.name.toLowerCase() === name.toLowerCase())) continue;
+    catalog.push({ id: stageIdFromName(name), name });
+  }
+  return catalog;
 }
