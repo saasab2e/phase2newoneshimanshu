@@ -1,0 +1,204 @@
+'use client';
+
+import { useEffect, useRef } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
+import { apiFetch, getTenantDbName } from '@/lib/api';
+import { useUser } from '@/hooks/useUser';
+import {
+  buildTenantBehaviorPayload,
+  postTenantBehaviorPayload,
+  ensureTenantActivitySession,
+  recordTenantActiveTime,
+  recordTenantPageVisit,
+  endTenantActivitySession,
+  syncTenantCrmSnapshot,
+  TENANT_BEHAVIOR_SYNC_EVENT,
+  TENANT_INTEREST_SYNC_EVENT,
+  trackTenantPathEntity,
+  syncTenantInterestsFromBehaviour,
+} from '@/lib/tenant-behavior-engine';
+
+const HEARTBEAT_MS = 15_000;
+const CRM_SYNC_MS = 180_000;
+
+const SKIP_PREFIXES = [
+  '/login',
+  '/hq',
+  '/forgot-password',
+  '/reset-password',
+  '/apply',
+  '/client-review',
+];
+
+function isSkippedPath(path: string) {
+  const p = (path || '/').toLowerCase();
+  return SKIP_PREFIXES.some((prefix) => p === prefix || p.startsWith(`${prefix}/`) || p.startsWith(`${prefix}?`));
+}
+
+/**
+ * Intelligent Phase 2 CRM behaviour tracker:
+ * sessions, navigation, entity views, clicks, API mutations, workflow journey, CRM context.
+ * HQ console paths are excluded so operator browsing does not pollute tenant snapshots.
+ */
+export function TenantBehaviorTrackerHost() {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const { user, loading } = useUser();
+  const userId = user?.id || null;
+  const tenantDbName = getTenantDbName();
+  const lastPathRef = useRef<string | null>(null);
+  const lastSearchRef = useRef<string | null>(null);
+  const userName =
+    [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim() ||
+    user?.name ||
+    user?.email ||
+    undefined;
+
+  const search = searchParams?.toString() ? `?${searchParams.toString()}` : '';
+
+  useEffect(() => {
+    if (loading || !userId || !tenantDbName) return;
+    if (isSkippedPath(pathname || '/')) return;
+
+    const path = pathname || '/';
+    ensureTenantActivitySession(tenantDbName, userId, { path, userName });
+
+    if (lastPathRef.current !== path || lastSearchRef.current !== search) {
+      recordTenantPageVisit(tenantDbName, userId, path, search);
+      trackTenantPathEntity(path, search);
+      lastPathRef.current = path;
+      lastSearchRef.current = search;
+    }
+  }, [loading, userId, tenantDbName, pathname, search, userName]);
+
+  useEffect(() => {
+    if (loading || !userId || !tenantDbName || isSkippedPath(pathname || '/')) return;
+
+    const onVis = () => {
+      if (document.visibilityState !== 'visible') return;
+      ensureTenantActivitySession(tenantDbName, userId, { path: pathname || '/', userName });
+    };
+    document.addEventListener('visibilitychange', onVis);
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      recordTenantActiveTime(tenantDbName, userId, HEARTBEAT_MS, pathname || '/');
+    }, HEARTBEAT_MS);
+
+    const onUnload = () => endTenantActivitySession(tenantDbName, userId);
+    window.addEventListener('pagehide', onUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.clearInterval(timer);
+      window.removeEventListener('pagehide', onUnload);
+    };
+  }, [loading, userId, tenantDbName, pathname, userName]);
+
+  useEffect(() => {
+    if (loading || !userId || !tenantDbName) return;
+    if (isSkippedPath(pathname || '/')) return;
+
+    const onClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const el = target.closest('[data-behavior-entity]') as HTMLElement | null;
+      if (!el) return;
+      const entityType = el.getAttribute('data-behavior-entity') || '';
+      const entityId = el.getAttribute('data-behavior-id') || undefined;
+      const entityLabel = el.getAttribute('data-behavior-label') || undefined;
+      const category = (el.getAttribute('data-behavior-category') || 'other') as import('@/lib/tenant-behavior-engine').TenantActivityCategory;
+      if (!entityType) return;
+      import('@/lib/tenant-behavior-engine').then(({ trackTenantEntityClick }) => {
+        trackTenantEntityClick({
+          entityType,
+          entityId,
+          entityLabel,
+          category,
+          pathname: pathname || '/',
+        });
+      });
+    };
+
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  }, [loading, userId, tenantDbName, pathname]);
+
+  useEffect(() => {
+    if (loading || !userId || !tenantDbName) return;
+    if (isSkippedPath(pathname || '/')) return;
+    let cancelled = false;
+
+    const syncCrm = async () => {
+      try {
+        const res = await apiFetch<{
+          openJobs?: number;
+          openCandidates?: number;
+          openLeads?: number;
+          openClients?: number;
+          pendingInterviews?: number;
+          openPlacements?: number;
+          pendingTasks?: number;
+        }>('/tenant-behavior/crm-context', { auth: true });
+        if (cancelled) return;
+        const base = res.data || {};
+        syncTenantCrmSnapshot(tenantDbName, userId, base);
+        const { refreshTenantIntelligence } = await import('@/lib/phase2-intelligence');
+        await refreshTenantIntelligence({
+          userId,
+          tenantDbName,
+          baseCrm: base,
+        });
+      } catch {
+        /* best-effort */
+      }
+    };
+
+    void syncCrm();
+    const onBehave =
+      (pathname || '').startsWith('/thebehave') || (pathname || '').startsWith('/tenant-behave');
+    const timer = window.setInterval(syncCrm, onBehave ? 45_000 : CRM_SYNC_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [loading, userId, tenantDbName, pathname]);
+
+  useEffect(() => {
+    if (loading || !userId || !tenantDbName) return;
+    if (isSkippedPath(pathname || '/')) return;
+    const onBehavePage =
+      (pathname || '').startsWith('/thebehave') || (pathname || '').startsWith('/tenant-behave');
+    const debounceMs = onBehavePage ? 400 : 900;
+    let timer: number | undefined;
+
+    const flush = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const payload = buildTenantBehaviorPayload(tenantDbName, userId, userName);
+        if (!payload) return;
+        void postTenantBehaviorPayload(payload);
+      }, debounceMs);
+    };
+
+    const onBehavior = () => flush();
+    const onInterest = () => {
+      if (tenantDbName && userId) syncTenantInterestsFromBehaviour(tenantDbName, userId);
+      flush();
+    };
+    window.addEventListener(TENANT_BEHAVIOR_SYNC_EVENT, onBehavior as EventListener);
+    window.addEventListener(TENANT_INTEREST_SYNC_EVENT, onInterest as EventListener);
+    flush();
+
+    const interval = window.setInterval(flush, onBehavePage ? 12_000 : 25_000);
+
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      window.clearInterval(interval);
+      window.removeEventListener(TENANT_BEHAVIOR_SYNC_EVENT, onBehavior as EventListener);
+      window.removeEventListener(TENANT_INTEREST_SYNC_EVENT, onInterest as EventListener);
+    };
+  }, [loading, userId, tenantDbName, userName, pathname]);
+
+  return null;
+}

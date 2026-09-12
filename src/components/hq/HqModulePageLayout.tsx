@@ -1,0 +1,111 @@
+'use client';
+
+import React from 'react';
+import {
+  PH2_PAGE_HEADER_BRAND_CLASS,
+  PH2_PAGE_HEADER_TITLE_CLASS,
+  PH2_KPI_ROW_CLASS,
+  PH2_TABLE_BODY_SCROLL_CLASS,
+  PH2_TABLE_CARD_CLASS,
+  PH2_TABLE_CARD_FOOTER_CLASS,
+  PH2_TABLE_CLASS,
+  PH2_TOOLBAR_ROW_CLASS,
+  PH2_TOOLBAR_SELECT_CLASS,
+} from '@/components/layout/Ph2ModulePageLayout';
+
+/** Re-export Phase 2 surface tokens so HQ pages share the same chrome. */
+export {
+  PH2_TOOLBAR_SELECT_CLASS as HQ_TOOLBAR_SELECT_CLASS,
+  PH2_TABLE_CARD_CLASS as HQ_TABLE_CARD_CLASS,
+  PH2_TOOLBAR_ROW_CLASS as HQ_TOOLBAR_ROW_CLASS,
+  PH2_TABLE_CARD_FOOTER_CLASS as HQ_TABLE_CARD_FOOTER_CLASS,
+  PH2_TABLE_BODY_SCROLL_CLASS as HQ_TABLE_BODY_SCROLL_CLASS,
+  PH2_TABLE_CLASS as HQ_TABLE_CLASS,
+  PH2_KPI_ROW_CLASS as HQ_KPI_ROW_CLASS,
+  PH2_PAGE_HEADER_BRAND_CLASS as HQ_PAGE_HEADER_BRAND_CLASS,
+  PH2_PAGE_HEADER_TITLE_CLASS as HQ_PAGE_HEADER_TITLE_CLASS,
+};
+
+export const HQ_HEADER_ICON_TILE_CLASS =
+  'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 text-white shadow-[0_12px_28px_-14px_rgba(15,23,42,0.55)] ring-1 ring-white/15';
+
+export const HQ_PAGE_HEADER_ICON_TILE_CLASS = HQ_HEADER_ICON_TILE_CLASS;
+
+export const HQ_PRIMARY_BUTTON_CLASS =
+  'inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-slate-900 via-slate-800 to-blue-900 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_28px_-14px_rgba(15,23,42,0.45)] transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50';
+
+export const HQ_SECONDARY_BUTTON_CLASS =
+  'inline-flex items-center gap-2 rounded-xl border border-indigo-100/90 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/40 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50';
+
+type HqModulePageLayoutProps = {
+  title: string;
+  /** Icon inside the gradient tile (e.g. `<UsersRound className="h-5 w-5" />`). */
+  icon: React.ReactNode;
+  subtitle?: string;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+  /** Drawers/portals rendered after the scroll region. */
+  belowScroll?: React.ReactNode;
+  /** When false, content area scrolls (dashboards). Default true = viewport-locked list. */
+  locked?: boolean;
+};
+
+/**
+ * HQ page chrome mirrored from Phase 2 `Ph2ModulePageLayout`:
+ * frosted header → content column → SummaryCards → table card.
+ * Height fills the HQ main surface (shell already locks to 100dvh).
+ *
+ * `locked` (default): viewport-fixed list pages — only an inner table panel scrolls.
+ * `locked={false}`: dashboards — the main content column scrolls (parent CSS also
+ * locks `.ph2-main-surface:has(.ph2-page-shell--scroll)` to overflow:hidden).
+ */
+export function HqModulePageLayout({
+  title,
+  icon,
+  subtitle,
+  actions,
+  children,
+  belowScroll,
+  locked = true,
+}: HqModulePageLayoutProps) {
+  return (
+    <div
+      className={`ph2-page-shell flex h-full max-h-full min-h-0 w-full flex-col overflow-hidden text-slate-900 ${
+        locked ? '' : 'ph2-page-shell--scroll'
+      }`}
+    >
+      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex min-h-[4.5rem] shrink-0 flex-wrap items-center justify-between gap-3 border-b border-indigo-100/50 bg-white/80 px-4 py-3 shadow-[inset_0_-1px_0_0_rgba(99,102,241,0.08)] backdrop-blur-md sm:px-6">
+          <div className={PH2_PAGE_HEADER_BRAND_CLASS}>
+            <div className={HQ_HEADER_ICON_TILE_CLASS}>{icon}</div>
+            <div className="min-w-0">
+              <h1 className={PH2_PAGE_HEADER_TITLE_CLASS}>{title}</h1>
+              {subtitle ? (
+                <p className="mt-1 max-w-2xl text-xs font-medium leading-snug text-slate-500 sm:text-[13px]">
+                  {subtitle}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          {actions ? (
+            <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">{actions}</div>
+          ) : null}
+        </header>
+        <div
+          className={`flex min-h-0 min-w-0 flex-1 flex-col px-3 py-2 sm:px-5 sm:py-4 lg:px-6 ${
+            locked ? 'overflow-hidden' : 'overflow-y-auto overscroll-y-contain custom-scrollbar'
+          }`}
+        >
+          <div
+            className={`mx-auto flex w-full min-w-0 max-w-[1600px] flex-col ${
+              locked ? 'min-h-0 flex-1' : 'pb-10'
+            }`}
+          >
+            {children}
+          </div>
+        </div>
+        {belowScroll}
+      </main>
+    </div>
+  );
+}

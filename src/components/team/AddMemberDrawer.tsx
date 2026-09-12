@@ -1,0 +1,738 @@
+'use client';
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { X, Check, Minus, KeyRound, Shield, User } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { toast } from 'sonner';
+import {
+  DrawerFieldLabel,
+  DrawerSectionCard,
+  DrawerSelectDropdown,
+  DRAWER_FORM_FOOTER_CLASS,
+  DRAWER_FORM_HEADER_CLASS,
+  DRAWER_FORM_INPUT,
+  DRAWER_FORM_SCROLL_BG,
+} from '../drawers/drawerFormUi';
+import {
+  createTeamMember,
+  getRoles,
+  getDepartments,
+  getDepartmentReportingManagers,
+  getAllTeamMembersForDirectory,
+} from '../../lib/api/teamApi';
+import type { Role, Department, CreateMemberPayload, TeamMember } from '../../types/team';
+import {
+  filterReportingManagers,
+  getRoleRankInDepartment,
+  getRolesForDepartment,
+  getMemberRoleId,
+  pickDefaultManagerId,
+  mergeReportingManagerLists,
+  mergeRolesWithDepartmentEmbedded,
+  type DepartmentWithRoles,
+} from '../../lib/teamReporting';
+import { startAsyncLoad } from '../../lib/asyncLoadGuard';
+import { useDrawerUnsavedGuard } from '../../hooks/useDrawerUnsavedGuard';
+import { formatModuleLabel } from './permissionCatalog';
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const KNOWN_DOMAINS = [
+  'gmail.com',
+  'yahoo.com',
+  'outlook.com',
+  'hotmail.com',
+  'icloud.com',
+  'rediffmail.com',
+  'mail.com',
+  'live.com',
+];
+
+function levenshtein(a: string, b: string) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) =>
+    Array(n + 1).fill(0).map((_, j) => (j === 0 ? i : 0))
+  );
+
+  for (let j = 0; j <= n; j += 1) dp[0][j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    for (let j = 1; j <= n; j += 1) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+
+  return dp[m][n];
+}
+
+function validateEmail(email: string) {
+  const value = String(email || '').trim();
+
+  if (!EMAIL_REGEX.test(value)) {
+    return { valid: false, message: 'Invalid email format' };
+  }
+
+  const domain = value.split('@')[1]?.toLowerCase() || '';
+  if (!KNOWN_DOMAINS.includes(domain)) {
+    let best: string | null = null;
+    let bestDist = Infinity;
+
+    for (const known of KNOWN_DOMAINS) {
+      const dist = levenshtein(domain, known);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = known;
+      }
+    }
+
+    if (bestDist <= 3 && best) {
+      return { valid: false, message: `Did you mean @${best}?` };
+    }
+  }
+
+  return { valid: true, message: 'Valid email' };
+}
+
+interface AddMemberDrawerProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSuccess: (member?: TeamMember) => void;
+}
+
+const INITIAL_FORM_DATA: CreateMemberPayload = {
+  firstName: '',
+  lastName: '',
+  email: '',
+  phone: '',
+  designation: '',
+  location: '',
+  departmentId: '',
+  roleId: '',
+  managerId: '',
+  status: 'ACTIVE',
+  generateCredentials: true,
+  sendInvite: true,
+};
+
+export const AddMemberDrawer: React.FC<AddMemberDrawerProps> = ({ isOpen, onClose, onSuccess }) => {
+  const [formData, setFormData] = useState<CreateMemberPayload>(INITIAL_FORM_DATA);
+
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [departments, setDepartments] = useState<DepartmentWithRoles[]>([]);
+  const [teamDirectory, setTeamDirectory] = useState<TeamMember[]>([]);
+  const [reportingManagers, setReportingManagers] = useState<TeamMember[]>([]);
+  const [loadingReporting, setLoadingReporting] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loadingOptions, setLoadingOptions] = useState(true);
+  const [createdMember, setCreatedMember] = useState<TeamMember | null>(null);
+
+  // Reset form when opening; parent may close without calling handleClose (e.g. onSuccess).
+  useEffect(() => {
+    if (!isOpen) return;
+    setFormData({ ...INITIAL_FORM_DATA });
+    setErrors({});
+    setCreatedMember(null);
+    setIsSubmitting(false);
+    loadOptions();
+  }, [isOpen]);
+
+  const loadOptions = async () => {
+    setLoadingOptions(true);
+    try {
+      const [rolesRes, deptsRes, directory] = await Promise.all([
+        getRoles(),
+        getDepartments(),
+        getAllTeamMembersForDirectory(),
+      ]);
+      const departmentList = deptsRes.data || [];
+      const mergedRoles = mergeRolesWithDepartmentEmbedded(rolesRes.data || [], departmentList);
+
+      setRoles(mergedRoles);
+      setDepartments(departmentList);
+      setTeamDirectory(directory);
+      setReportingManagers([]);
+    } catch (error: any) {
+      toast.error('Failed to load options');
+    } finally {
+      setLoadingOptions(false);
+    }
+  };
+
+  // Generate loginId preview
+  const loginIdPreview = formData.firstName && formData.lastName
+    ? `${formData.firstName.toLowerCase().replace(/[^a-z0-9]/g, '')}.${formData.lastName.toLowerCase().replace(/[^a-z0-9]/g, '')}@hryantra`
+    : '';
+
+  const availableRoles = useMemo(
+    () => getRolesForDepartment(formData.departmentId, departments, roles),
+    [formData.departmentId, departments, roles],
+  );
+
+  // Get selected role (includes rank from department config)
+  const selectedRole =
+    availableRoles.find((r) => String(r.id) === String(formData.roleId)) ||
+    roles.find((r) => String(r.id) === String(formData.roleId));
+
+  useEffect(() => {
+    if (loadingOptions) return;
+    if (!formData.departmentId) {
+      setReportingManagers([]);
+      setLoadingReporting(false);
+      return;
+    }
+    if (
+      formData.roleId &&
+      availableRoles.length > 0 &&
+      !availableRoles.some((r) => String(r.id) === String(formData.roleId))
+    ) {
+      setFormData((prev) => ({ ...prev, roleId: '', managerId: '' }));
+      setReportingManagers([]);
+      setLoadingReporting(false);
+      return;
+    }
+    if (!formData.roleId) {
+      setReportingManagers([]);
+      setLoadingReporting(false);
+      return;
+    }
+
+    const load = startAsyncLoad(setLoadingReporting);
+    const memberRank = selectedRole?.rank ?? null;
+
+    const applyList = (list: TeamMember[], defaultId?: string) => {
+      if (!load.isActive()) return;
+      setReportingManagers(list);
+      const resolvedDefault = defaultId || pickDefaultManagerId(list, formData.managerId);
+      if (resolvedDefault) {
+        setFormData((prev) => ({
+          ...prev,
+          managerId:
+            prev.managerId && list.some((m) => m.id === prev.managerId)
+              ? prev.managerId
+              : resolvedDefault,
+        }));
+      }
+    };
+
+    const clientFallback = async () => {
+      let directory = teamDirectory;
+      if (!directory.length) {
+        directory = await getAllTeamMembersForDirectory();
+        if (load.isActive()) setTeamDirectory(directory);
+      }
+      return filterReportingManagers({
+        managers: directory,
+        departmentId: formData.departmentId,
+        roleId: formData.roleId,
+        departments,
+        memberRank,
+        departmentRoleOptions: availableRoles,
+      });
+    };
+
+    getDepartmentReportingManagers(formData.departmentId, formData.roleId)
+      .then(async (res) => {
+        if (!load.isActive()) return;
+        const apiList = res.data || [];
+        const fallback = await clientFallback();
+        const list = mergeReportingManagerLists(apiList, fallback);
+        applyList(list, res.defaultManagerId || pickDefaultManagerId(list));
+      })
+      .catch(async () => {
+        if (!load.isActive()) return;
+        try {
+          applyList(await clientFallback());
+        } catch {
+          if (load.isActive()) setReportingManagers([]);
+        }
+      })
+      .finally(() => {
+        load.finish();
+      });
+
+    return () => {
+      load.abort();
+    };
+  }, [
+    loadingOptions,
+    formData.departmentId,
+    formData.roleId,
+    availableRoles,
+    departments,
+    teamDirectory,
+    selectedRole?.rank,
+  ]);
+
+  // Get modules from role permissions
+  const getModules = () => {
+    if (!selectedRole || !('rolePermissions' in selectedRole)) return [];
+    const roleWithPerms = selectedRole as any;
+    if (!roleWithPerms.rolePermissions) return [];
+    const modules = new Set<string>();
+    roleWithPerms.rolePermissions.forEach((rp: any) => {
+      if (rp.permission?.module) {
+        modules.add(rp.permission.module);
+      }
+    });
+    return Array.from(modules).sort();
+  };
+
+  const modules = getModules();
+
+  const handleChange = (field: keyof CreateMemberPayload, value: any) => {
+    setFormData((prev) => ({ ...prev, [field]: value }));
+    if (errors[field]) {
+      setErrors((prev) => {
+        const newErrors = { ...prev };
+        delete newErrors[field];
+        return newErrors;
+      });
+    }
+  };
+
+  const validate = (): boolean => {
+    const newErrors: Record<string, string> = {};
+
+    if (!formData.firstName.trim()) newErrors.firstName = 'First name is required';
+    if (!formData.lastName.trim()) newErrors.lastName = 'Last name is required';
+    if (!formData.email.trim()) {
+      newErrors.email = 'Email is required';
+    } else {
+      const result = validateEmail(formData.email);
+      if (!result.valid) {
+        newErrors.email = result.message;
+      }
+    }
+    if (!formData.roleId) newErrors.roleId = 'Role is required';
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validate()) return;
+
+    setIsSubmitting(true);
+    try {
+      const payload: CreateMemberPayload = {
+        ...formData,
+        departmentId: formData.departmentId || undefined,
+        managerId: formData.managerId || undefined,
+        phone: formData.phone || undefined,
+        designation: formData.designation || undefined,
+        location: formData.location || undefined,
+      };
+
+      const response = await createTeamMember(payload);
+      const member = response.data as TeamMember;
+      setCreatedMember(member);
+      toast.success(
+        member?.credentialData?.loginId
+          ? 'Team member created and credentials generated successfully'
+          : 'Team member created successfully'
+      );
+      onSuccess(member);
+      markClean();
+    } catch (error: any) {
+      const errorMessage = error?.message || 'Failed to create team member';
+      if (errorMessage.toLowerCase().includes('email')) {
+        setErrors({ email: errorMessage });
+      } else {
+        toast.error(errorMessage);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleClose = () => {
+    setFormData({ ...INITIAL_FORM_DATA });
+    setErrors({});
+    setCreatedMember(null);
+    setIsSubmitting(false);
+    onClose();
+  };
+
+  const { panelRef, requestClose, markClean } = useDrawerUnsavedGuard<HTMLDivElement>({
+    isOpen,
+    onClose: handleClose,
+  });
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <>
+          {/* Backdrop */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => void requestClose()}
+            className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] z-[60]"
+            data-drawer-skip-dirty="true"
+          />
+
+          {/* Drawer */}
+          <motion.div
+            ref={panelRef}
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            onClick={(e) => e.stopPropagation()}
+            className="fixed right-0 top-0 h-full w-3/4 max-w-6xl bg-white shadow-2xl z-[70] flex flex-col"
+          >
+            {/* Header */}
+            <div className={DRAWER_FORM_HEADER_CLASS}>
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/25">
+                  <User size={20} />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight text-slate-900">Add Team Member</h2>
+                  <p className="mt-0.5 text-xs text-slate-500">Invite someone and set their role and access</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void requestClose()}
+                className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close"
+                data-drawer-skip-dirty="true"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Content */}
+            <form onSubmit={handleSubmit} className={`flex-1 overflow-y-auto ${DRAWER_FORM_SCROLL_BG} p-6 space-y-5`}>
+              <DrawerSectionCard title="Basic Information" subtitle="Name and contact details" icon={User} accent="blue">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <DrawerFieldLabel label="First Name" required />
+                    <input
+                      type="text"
+                      value={formData.firstName}
+                      onChange={(e) => handleChange('firstName', e.target.value)}
+                      className={`${DRAWER_FORM_INPUT} ${errors.firstName ? 'border-red-300' : ''}`}
+                      placeholder="John"
+                    />
+                    {errors.firstName && <p className="text-xs text-red-600">{errors.firstName}</p>}
+                  </div>
+                  <div>
+                    <DrawerFieldLabel label="Last Name" required />
+                    <input
+                      type="text"
+                      value={formData.lastName}
+                      onChange={(e) => handleChange('lastName', e.target.value)}
+                      className={`${DRAWER_FORM_INPUT} ${errors.lastName ? 'border-red-300' : ''}`}
+                      placeholder="Doe"
+                    />
+                    {errors.lastName && <p className="text-xs text-red-600">{errors.lastName}</p>}
+                  </div>
+                  <div className="sm:col-span-2">
+                    <DrawerFieldLabel label="Work Email" required />
+                    <input
+                      type="email"
+                      value={formData.email}
+                      onChange={(e) => handleChange('email', e.target.value)}
+                      onBlur={() => {
+                        if (!formData.email.trim()) {
+                          setErrors((prev) => ({ ...prev, email: 'Email is required' }));
+                          return;
+                        }
+                        const result = validateEmail(formData.email);
+                        if (!result.valid) {
+                          setErrors((prev) => ({ ...prev, email: result.message }));
+                        }
+                      }}
+                      className={`${DRAWER_FORM_INPUT} ${errors.email ? 'border-red-300' : ''}`}
+                      placeholder="john.doe@company.com"
+                    />
+                    {errors.email && <p className="text-xs text-red-600">{errors.email}</p>}
+                  </div>
+                  <div className="sm:col-span-2">
+                    <DrawerFieldLabel label="Phone" />
+                    <input
+                      type="tel"
+                      value={formData.phone}
+                      onChange={(e) => handleChange('phone', e.target.value)}
+                      className={DRAWER_FORM_INPUT}
+                      placeholder="+1 234 567 8900"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <DrawerFieldLabel label="Designation" />
+                    <input
+                      type="text"
+                      value={formData.designation}
+                      onChange={(e) => handleChange('designation', e.target.value)}
+                      className={DRAWER_FORM_INPUT}
+                      placeholder="Senior Recruiter"
+                    />
+                  </div>
+                </div>
+              </DrawerSectionCard>
+
+              <DrawerSectionCard title="Role & Access" subtitle="Department, role, and reporting line" icon={Shield} accent="violet">
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">Department</label>
+                    <select
+                      value={formData.departmentId || ''}
+                      onChange={(e) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          departmentId: e.target.value || '',
+                          roleId: '',
+                          managerId: '',
+                        }))
+                      }
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                      disabled={loadingOptions}
+                    >
+                      <option value="">Select department</option>
+                      {departments.map((dept) => (
+                        <option key={dept.id} value={dept.id}>
+                          {dept.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">Department Role *</label>
+                    <select
+                      value={formData.roleId}
+                      onChange={(e) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          roleId: e.target.value,
+                          managerId: '',
+                        }))
+                      }
+                      className={`w-full px-3 py-2 bg-white border rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all ${
+                        errors.roleId ? 'border-red-300' : 'border-slate-200'
+                      }`}
+                      disabled={loadingOptions || !formData.departmentId}
+                    >
+                      <option value="">
+                        {formData.departmentId ? 'Select role' : 'Select department first'}
+                      </option>
+                      {availableRoles.map((role) => (
+                        <option key={role.id} value={role.id}>
+                          {role.roleName}
+                          {'rank' in role && role.rank != null ? ` (Rank ${role.rank})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {errors.roleId && <p className="text-xs text-red-600">{errors.roleId}</p>}
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">Reports To</label>
+                    <select
+                      value={formData.managerId || ''}
+                      onChange={(e) => handleChange('managerId', e.target.value || '')}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                      disabled={loadingOptions || loadingReporting || !formData.roleId}
+                    >
+                      <option value="">
+                        {formData.roleId ? 'Select manager' : 'Select role first'}
+                      </option>
+                      {reportingManagers.map((mgr) => {
+                        const mgrRank = getRoleRankInDepartment(
+                          formData.departmentId,
+                          getMemberRoleId(mgr),
+                          departments,
+                          mgr.role?.roleName,
+                        );
+                        return (
+                          <option key={mgr.id} value={mgr.id}>
+                            {mgr.firstName} {mgr.lastName}
+                            {mgr.role?.roleName ? ` — ${mgr.role.roleName}` : ''}
+                            {mgrRank != null ? ` (Rank ${mgrRank})` : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <p className="text-[11px] text-slate-500">
+                      Shows members with a higher rank (lower rank number). Super Admin is always available if no one else qualifies yet.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">Location</label>
+                    <input
+                      type="text"
+                      value={formData.location}
+                      onChange={(e) => handleChange('location', e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                      placeholder="New York, USA"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700">Status</label>
+                    <select
+                      value={formData.status}
+                      onChange={(e) => handleChange('status', e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                    >
+                      <option value="ACTIVE">Active</option>
+                      <option value="INACTIVE">Inactive</option>
+                    </select>
+                  </div>
+                </div>
+              </DrawerSectionCard>
+
+              <DrawerSectionCard title="Login Credentials" subtitle="Auto-generate login access" icon={KeyRound} accent="sky">
+                <div className="space-y-4">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.generateCredentials}
+                      onChange={(e) => handleChange('generateCredentials', e.target.checked)}
+                      className="size-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="text-sm font-medium text-slate-700">Generate login credentials</span>
+                  </label>
+
+                  {formData.generateCredentials && (
+                    <div className="space-y-4 pl-7">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-700">Login ID</label>
+                        <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono text-slate-600">
+                          {loginIdPreview || 'Will be generated automatically'}
+                        </div>
+                      </div>
+
+                      {selectedRole && modules.length > 0 && (
+                        <div className="space-y-2">
+                          <label className="text-xs font-semibold text-slate-700">Portal Access</label>
+                          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+                            {modules.map((module) => (
+                              <div key={module} className="flex items-center gap-2 text-sm text-slate-700">
+                                <Check size={14} className="text-green-600" />
+                                <span>{formatModuleLabel(module)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={formData.sendInvite}
+                          onChange={(e) => handleChange('sendInvite', e.target.checked)}
+                          className="size-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm font-medium text-slate-700">Send invite email</span>
+                      </label>
+                    </div>
+                  )}
+
+                  {formData.generateCredentials && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                      <p className="text-xs text-amber-800">
+                        User will be required to set a new password on first login.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </DrawerSectionCard>
+
+              {createdMember?.credentialData ? (
+                <DrawerSectionCard title="Generated Credentials" subtitle="Share securely with the new member" icon={KeyRound} accent="emerald">
+                  <div className="rounded-2xl border border-green-200 bg-green-50 p-4 space-y-4">
+                    <p className="text-sm font-medium text-green-900">
+                      Credentials created for {createdMember.firstName} {createdMember.lastName}
+                    </p>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs font-semibold text-green-900/80">Login ID</label>
+                        <div className="mt-1 rounded-lg border border-green-200 bg-white px-3 py-2 text-sm font-mono text-slate-800">
+                          {createdMember.credentialData.loginId}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-green-900/80">Temporary Password</label>
+                        <div className="mt-1 rounded-lg border border-green-200 bg-white px-3 py-2 text-sm font-mono text-slate-800">
+                          {createdMember.credentialData.tempPassword}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(
+                            `Login ID: ${createdMember.credentialData?.loginId}\nTemporary Password: ${createdMember.credentialData?.tempPassword}`
+                          );
+                          toast.success('Credentials copied');
+                        }}
+                        className="px-4 py-2 text-sm font-medium text-green-900 bg-white border border-green-200 rounded-lg hover:bg-green-100 transition-colors"
+                      >
+                        Copy Credentials
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void requestClose()}
+                        className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </div>
+                </DrawerSectionCard>
+              ) : null}
+            </form>
+
+            {/* Footer */}
+            <div className={DRAWER_FORM_FOOTER_CLASS}>
+              <button
+                type="button"
+                onClick={() => void requestClose()}
+                className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                {createdMember?.credentialData ? 'Close' : 'Cancel'}
+              </button>
+                  {createdMember?.credentialData ? (
+                    <button
+                      type="button"
+                      onClick={() => void requestClose()}
+                      className="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+                >
+                  Done
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  onClick={handleSubmit}
+                  disabled={
+                    isSubmitting ||
+                    !formData.firstName.trim() ||
+                    !formData.lastName.trim() ||
+                    !formData.email.trim() ||
+                    !validateEmail(formData.email).valid ||
+                    !formData.roleId
+                  }
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <div className="size-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    'Create Member'
+                  )}
+                </button>
+              )}
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  );
+};

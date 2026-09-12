@@ -1,0 +1,883 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  --ph2-impersonation-banner-h: 0px;
+  --ph2-header-h: 3.5rem;
+  --ph2-sidenav-w: 220px;
+}
+
+/* Tenant + HQ dashboards: Jakarta letters/signs, Inter digits */
+.dash-ui {
+  font-family: var(--font-crm-text), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.011em;
+}
+.dash-ui h1,
+.dash-ui h2,
+.dash-ui h3 {
+  font-family: var(--font-crm-text), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+}
+.dash-ui .tabular-nums {
+  font-family: var(--font-crm-num), Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ─── Phase 2 theme tokens & shared surfaces ───────────────────────────────
+   Most UI uses Tailwind `rem` utilities — they follow --ph2-root-font-pct on html.
+   Headings below use :where() so any `text-*` class on the same tag still wins.
+   Optional: add class `ph2-subtitle` under page titles; tune via --ph2-subtitle-*.
+────────────────────────────────────────────────────────────────────────── */
+@layer base {
+  :root {
+    --ph2-accent-primary: 37 99 235;
+    --ph2-accent-teal: 13 148 136;
+    --ph2-radius-card: 1rem;
+
+    /** Overall rem scale (Tailwind spacing + text-sm / text-base / etc.). */
+    --ph2-root-font-pct: 82%;
+
+    /** App font — edit stack here only (matches existing Arimo shell layouts). */
+    --ph2-font-sans: "Arimo", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+      "Segoe UI Symbol", "Noto Color Emoji";
+    --ph2-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+    /** Multiply all semantic h1–h6 sizes below (1 = default ramp). */
+    --ph2-heading-scale: 1;
+    --ph2-h1-size: calc(1.625rem * var(--ph2-heading-scale));
+    --ph2-h2-size: calc(1.375rem * var(--ph2-heading-scale));
+    --ph2-h3-size: calc(1.25rem * var(--ph2-heading-scale));
+    --ph2-h4-size: calc(1.125rem * var(--ph2-heading-scale));
+    --ph2-h5-size: calc(1.0625rem * var(--ph2-heading-scale));
+    --ph2-h6-size: calc(1rem * var(--ph2-heading-scale));
+
+    /** Class `.ph2-subtitle` — supporting line under a heading. */
+    --ph2-subtitle-size: 0.875rem;
+    --ph2-subtitle-leading: 1.45;
+    --ph2-subtitle-color: 100 116 139;
+
+    /** `.ph2-card` / `.ph2-card-sm` padding & radius (only affects those classes). */
+    --ph2-card-padding: 1.25rem;
+    --ph2-card-sm-padding: 1rem;
+    --ph2-radius-card-lg: 1rem;
+    --ph2-radius-card-sm: 0.75rem;
+  }
+
+  html {
+    font-size: var(--ph2-root-font-pct);
+    font-family: var(--ph2-font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    font-family: inherit;
+    max-width: 100%;
+  }
+
+  :where(h1) {
+    font-size: var(--ph2-h1-size);
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  :where(h2) {
+    font-size: var(--ph2-h2-size);
+    line-height: 1.25;
+    font-weight: 600;
+    letter-spacing: -0.018em;
+  }
+  :where(h3) {
+    font-size: var(--ph2-h3-size);
+    line-height: 1.3;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+  }
+  :where(h4) {
+    font-size: var(--ph2-h4-size);
+    line-height: 1.35;
+    font-weight: 600;
+  }
+  :where(h5) {
+    font-size: var(--ph2-h5-size);
+    line-height: 1.4;
+    font-weight: 600;
+  }
+  :where(h6) {
+    font-size: var(--ph2-h6-size);
+    line-height: 1.4;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  :where(code, kbd, samp, pre) {
+    font-family: var(--ph2-font-mono);
+  }
+}
+
+@media print {
+  html {
+    font-size: 100% !important;
+  }
+}
+
+@layer components {
+  /**
+   * HQ console theme — Plus Jakarta Sans (CRM/Rec dashboard text) + charcoal / orange.
+   */
+  .hq-theme {
+    --ph2-header-h: 0px;
+    --ph2-sidenav-w: 220px;
+    --hq-bg-0: #eef2f7;
+    --hq-bg-1: #f7f9fc;
+    --hq-surface: #ffffff;
+    --hq-surface-muted: #f8fafc;
+    --hq-border: rgba(51, 65, 85, 0.1);
+    --hq-border-strong: rgba(51, 65, 85, 0.16);
+    --hq-ink: #334155;
+    --hq-muted: #64748b;
+    --hq-accent: #f97316;
+    --hq-accent-soft: rgba(249, 115, 22, 0.1);
+    --hq-row-hover: rgba(51, 65, 85, 0.05);
+    --hq-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.04);
+    --hq-shadow-md: 0 2px 4px rgba(15, 23, 42, 0.04), 0 16px 40px rgba(15, 23, 42, 0.06);
+    --hq-radius: 1rem;
+    --hq-radius-sm: 0.75rem;
+
+    font-family: var(--font-crm-text), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    color: var(--hq-ink);
+    letter-spacing: -0.011em;
+  }
+
+  .hq-theme input,
+  .hq-theme select,
+  .hq-theme textarea,
+  .hq-theme button,
+  .hq-theme table,
+  .hq-theme th,
+  .hq-theme td,
+  .hq-theme label,
+  .hq-theme p,
+  .hq-theme span,
+  .hq-theme a {
+    font-family: inherit;
+  }
+
+  .hq-theme .hq-display,
+  .hq-theme h1 {
+    font-family: var(--font-crm-text), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.02em;
+  }
+
+  .hq-theme h2,
+  .hq-theme h3 {
+    font-family: var(--font-crm-text), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.015em;
+  }
+
+  .hq-theme .tabular-nums {
+    font-family: var(--font-crm-num), Inter, ui-sans-serif, system-ui, sans-serif;
+  }
+
+  /** Modern HQ data tables — applies to every table under HQ */
+  .hq-theme table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+  }
+
+  .hq-theme thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    color: #64748b;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--hq-border-strong);
+    padding: 0.85rem 1rem;
+  }
+
+  .hq-theme tbody td {
+    padding: 0.9rem 1rem;
+    border-bottom: 1px solid var(--hq-border);
+    color: #334155;
+    vertical-align: middle;
+  }
+
+  .hq-theme tbody tr {
+    transition: background-color 160ms ease;
+  }
+
+  .hq-theme tbody tr:hover td {
+    background: var(--hq-row-hover);
+  }
+
+  .hq-theme tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  .hq-theme .hq-table-wrap {
+    overflow: hidden;
+    border-radius: var(--hq-radius);
+    border: 1px solid var(--hq-border);
+    background: var(--hq-surface);
+    box-shadow: var(--hq-shadow-sm);
+  }
+
+  .hq-theme .hq-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .hq-theme .hq-surface {
+    border-radius: var(--hq-radius);
+    border: 1px solid var(--hq-border);
+    background: var(--hq-surface);
+    box-shadow: var(--hq-shadow-sm);
+  }
+
+  .hq-theme .hq-surface-muted {
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  }
+
+  /** Standard elevated panel — use on dashboards, lists, drawers */
+  .ph2-card {
+    @apply border border-slate-200/95 bg-white shadow-ph2-card transition-all duration-200;
+    border-radius: var(--ph2-radius-card-lg);
+    padding: var(--ph2-card-padding);
+  }
+  .ph2-card:hover {
+    @apply border-blue-200/90 shadow-ph2-card-hover;
+  }
+
+  /** Compact variant */
+  .ph2-card-sm {
+    @apply border border-slate-200/95 bg-white shadow-ph2-card transition-all duration-200;
+    border-radius: var(--ph2-radius-card-sm);
+    padding: var(--ph2-card-sm-padding);
+  }
+  .ph2-card-sm:hover {
+    @apply border-blue-200/80 shadow-md;
+  }
+
+  /** Optional subtitle under a title — size/color from :root tokens. */
+  .ph2-subtitle {
+    font-size: var(--ph2-subtitle-size);
+    line-height: var(--ph2-subtitle-leading);
+    color: rgb(var(--ph2-subtitle-color) / 0.95);
+  }
+
+  /** Icon badge for KPI / stat rows */
+  .ph2-icon-badge {
+    @apply inline-flex items-center justify-center rounded-xl p-2.5 transition-transform duration-200;
+  }
+
+  /** Main content shell — subtle cool gradient behind all portal pages */
+  .ph2-main-surface {
+    min-width: 0;
+    max-width: 100%;
+    background: linear-gradient(165deg, #f8fafc 0%, #f1f5f9 45%, #eef2ff 100%);
+  }
+
+  .ph2-page-shell {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Viewport-locked CRM list pages — only the table panel scrolls */
+  .ph2-main-surface:has(.ph2-page-shell) {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+
+  /** HQ console uses the same lock when a Phase 2–style page shell is present */
+  .hq-theme .ph2-main-surface:has(.ph2-page-shell) {
+    height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+  }
+
+  /**
+   * Dashboard-style HQ pages (`locked={false}` → `.ph2-page-shell--scroll`):
+   * keep the surface viewport-locked, but the shell fills height so its
+   * inner column can overflow-y scroll (list pages stay table-only scroll).
+   */
+  .ph2-main-surface:has(.ph2-page-shell--scroll),
+  .hq-theme .ph2-main-surface:has(.ph2-page-shell--scroll) {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .ph2-page-shell--scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    max-height: 100%;
+  }
+
+  /**
+   * Default white stat/list cards: slight blue rim so panels feel tinted site-wide.
+   * Skips elements that already use ph2-card (duplicate shadows avoided via ring opacity).
+   */
+  .ph2-main-surface .rounded-2xl.border.border-slate-200.bg-white:not(.ph2-card):not(.ph2-card-sm) {
+    box-shadow:
+      0 1px 2px rgb(15 23 42 / 0.05),
+      0 0 0 1px rgb(59 130 246 / 0.05);
+  }
+  .ph2-main-surface .rounded-2xl.border.border-slate-200.bg-white:not(.ph2-card):not(.ph2-card-sm):hover {
+    border-color: rgb(191 219 254 / 0.9);
+    box-shadow: 0 8px 24px -8px rgb(37 99 235 / 0.12);
+  }
+
+  /** HQ employee / employer command dashboards */
+  .hq-theme .hq-dash-page {
+    background:
+      radial-gradient(ellipse 90% 55% at 8% -8%, rgba(99, 102, 241, 0.1), transparent 55%),
+      radial-gradient(ellipse 70% 45% at 96% 0%, rgba(20, 184, 166, 0.07), transparent 50%),
+      radial-gradient(ellipse 50% 35% at 50% 100%, rgba(59, 130, 246, 0.05), transparent 60%);
+    font-family: var(--font-crm-text), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.011em;
+  }
+
+  .hq-theme .hq-dash-page,
+  .hq-theme .dash-ui,
+  .hq-theme .dash-ui p,
+  .hq-theme .dash-ui span,
+  .hq-theme .dash-ui a,
+  .hq-theme .dash-ui button,
+  .hq-theme .dash-ui label,
+  .hq-theme .dash-ui td,
+  .hq-theme .dash-ui th,
+  .hq-theme .hq-dash-page p,
+  .hq-theme .hq-dash-page span,
+  .hq-theme .hq-dash-page a,
+  .hq-theme .hq-dash-page button,
+  .hq-theme .hq-dash-page label,
+  .hq-theme .hq-dash-page td,
+  .hq-theme .hq-dash-page th {
+    font-family: var(--font-crm-text), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  }
+
+  .hq-theme .hq-dash-page h1,
+  .hq-theme .hq-dash-page h2,
+  .hq-theme .hq-dash-page h3,
+  .hq-theme .dash-ui h1,
+  .hq-theme .dash-ui h2,
+  .hq-theme .dash-ui h3 {
+    font-family: var(--font-crm-text), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.02em;
+  }
+
+  .hq-theme .hq-dash-page .tabular-nums,
+  .hq-theme .dash-ui .tabular-nums {
+    font-family: var(--font-crm-num), Inter, ui-sans-serif, system-ui, sans-serif;
+  }
+
+  .hq-theme .hq-dash-card {
+    transition:
+      transform 0.18s ease,
+      box-shadow 0.18s ease,
+      border-color 0.18s ease;
+  }
+
+  .hq-theme .hq-dash-card:hover {
+    border-color: rgba(165, 180, 252, 0.55);
+  }
+}
+
+/* Custom scrollbar — thin indigo (drawers, panels, misc lists) */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(129 140 248 / 0.5) transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgb(165 180 252 / 0.55);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgb(129 140 248 / 0.75);
+  background-clip: padding-box;
+}
+
+/* Toolbar filter dropdowns — scrollable list with minimal overlay scrollbar */
+.ph2-invisible-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
+  overscroll-behavior: contain;
+}
+
+.ph2-invisible-scrollbar::-webkit-scrollbar {
+  width: 5px;
+}
+
+.ph2-invisible-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ph2-invisible-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+}
+
+.ph2-invisible-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.42);
+}
+
+/*
+  Portaled toolbar menus (Columns, filters). Must be fully opaque: table cards
+  and sticky headers use backdrop-filter, which Chromium composites through
+  translucent overlays so table text shows through the dropdown.
+*/
+.ph2-portal-popover {
+  box-sizing: border-box;
+  background-color: #ffffff;
+  isolation: isolate;
+  transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  opacity: 1;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+}
+
+/* No scrollbar */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Phase 2 sidebar: do not chain wheel/overscroll to the main column behind it */
+.ph2-sidenav-aside {
+  overscroll-behavior: contain;
+}
+
+/* Sidebar (Sidenav) — always show a thin scrollbar on the dark rail */
+.sidenav-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.55) rgba(255, 255, 255, 0.06);
+  overscroll-behavior-y: contain;
+}
+
+.sidenav-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidenav-scrollbar::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+
+.sidenav-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.sidenav-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(186, 198, 212, 0.65);
+  background-clip: padding-box;
+}
+
+/* CRM list tables — thin indigo scrollbars on both axes */
+.ph2-table-body-scroll,
+.leads-table-body-scroll,
+.team-table-body-scroll {
+  max-width: 100%;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(129 140 248 / 0.5) transparent;
+  overscroll-behavior: contain;
+}
+
+/*
+  Below md: sidebar is an overlay drawer. Main content stays full width so
+  the 220px rail never crushes Jobs / Leads / Settings on phones.
+*/
+.ph2-sidenav-backdrop {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  :root,
+  html {
+    --ph2-sidenav-w: 0px;
+  }
+  .ph2-sidenav-aside {
+    width: min(16.5rem, 86vw) !important;
+    transform: translateX(-100%);
+    z-index: 46 !important;
+    transition: transform 0.22s ease;
+  }
+
+  .ph2-sidenav-aside.ph2-sidenav-open {
+    transform: translateX(0);
+    box-shadow: 16px 0 48px rgba(2, 8, 23, 0.45);
+  }
+
+  .ph2-sidenav-backdrop {
+    display: block;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    background: rgba(2, 8, 23, 0.45);
+    top: calc(3.5rem + var(--ph2-impersonation-banner-h, 0px));
+  }
+
+  .ph2-main-surface {
+    margin-left: 0 !important;
+  }
+}
+
+.ph2-table-body-scroll::-webkit-scrollbar,
+.leads-table-body-scroll::-webkit-scrollbar,
+.team-table-body-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.ph2-table-body-scroll::-webkit-scrollbar-track,
+.leads-table-body-scroll::-webkit-scrollbar-track,
+.team-table-body-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+  margin: 2px;
+}
+
+.ph2-table-body-scroll::-webkit-scrollbar-thumb,
+.leads-table-body-scroll::-webkit-scrollbar-thumb,
+.team-table-body-scroll::-webkit-scrollbar-thumb {
+  background: rgb(165 180 252 / 0.55);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.ph2-table-body-scroll::-webkit-scrollbar-thumb:hover,
+.leads-table-body-scroll::-webkit-scrollbar-thumb:hover,
+.team-table-body-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgb(129 140 248 / 0.75);
+  background-clip: padding-box;
+}
+
+.ph2-table-body-scroll::-webkit-scrollbar-corner,
+.leads-table-body-scroll::-webkit-scrollbar-corner,
+.team-table-body-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Leads table — horizontal scrollbar dock (synced with table scroll) */
+.leads-hscroll-dock {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(129 140 248 / 0.5) transparent;
+  overscroll-behavior-x: contain;
+}
+
+.leads-hscroll-dock::-webkit-scrollbar {
+  height: 6px;
+}
+
+.leads-hscroll-dock::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+  margin: 0 4px;
+}
+
+.leads-hscroll-dock::-webkit-scrollbar-thumb {
+  background: rgb(165 180 252 / 0.55);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.leads-hscroll-dock::-webkit-scrollbar-thumb:hover {
+  background: rgb(129 140 248 / 0.75);
+  background-clip: padding-box;
+}
+
+/* Line clamp utility */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Animation utilities */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-in {
+  animation: fade-in 0.5s ease-in-out;
+}
+
+/* Rich text editor (Add Job drawer) */
+.job-rich-text-editor .job-rte-editor {
+  min-height: var(--rte-min-height, 280px);
+  background: #fff;
+}
+
+.job-rich-text-editor .job-rte-editor:empty::before {
+  content: attr(data-placeholder);
+  color: rgb(148 163 184);
+  pointer-events: none;
+}
+
+.job-rich-text-editor .job-rte-editor h1 {
+  font-size: 1.375rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.job-rich-text-editor .job-rte-editor h2 {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin: 0.65rem 0 0.4rem;
+}
+
+.job-rich-text-editor .job-rte-editor h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0.35rem;
+}
+
+.job-rich-text-editor .job-rte-editor ul,
+.job-rich-text-editor .job-rte-editor ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+
+.job-rich-text-editor .job-rte-editor a {
+  color: rgb(37 99 235);
+  text-decoration: underline;
+}
+
+/* Candidate drawer — docx-preview (Word layout fidelity) */
+.resume-docx-viewer .resume-docx-body {
+  min-height: min(720px, calc(100vh - 14rem));
+}
+
+.resume-docx-viewer .docx-preview-resume-wrapper {
+  margin-left: auto;
+  margin-right: auto;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 0.12);
+}
+
+/* HRYantra CV — inline text editing on PDF / Word */
+.saasa-docx-editable .docx-preview-resume-wrapper,
+.saasa-docx-editable .docx-preview-resume {
+  /* Keep Word layout from docx-preview — do not restyle structure */
+}
+
+.saasa-direct-text-editor {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11pt;
+  line-height: 1.45;
+  color: #0f172a;
+  cursor: text;
+  background: rgb(255 255 255 / 0.92);
+  padding: 1rem 1.25rem;
+  border-radius: 0.5rem;
+}
+
+.saasa-direct-text-editor:focus {
+  outline: none;
+}
+
+.saasa-direct-text-editor .saasa-cv-text-name {
+  font-size: 16pt;
+  margin: 0 0 0.35rem;
+  text-align: center;
+}
+
+.saasa-direct-text-editor .saasa-cv-text-contact {
+  margin: 0 0 1rem;
+  text-align: center;
+  font-size: 10pt;
+}
+
+.saasa-direct-text-editor .saasa-cv-text-heading {
+  margin: 0.85rem 0 0.35rem;
+  font-size: 11pt;
+  letter-spacing: 0.04em;
+}
+
+.saasa-direct-text-editor .saasa-cv-text-body {
+  margin: 0 0 0.35rem;
+}
+
+.saasa-docx-text-node {
+  outline: none;
+  cursor: text;
+  border-radius: 1px;
+}
+
+.saasa-docx-text-node:focus {
+  box-shadow: 0 0 0 2px rgb(59 130 246 / 0.35);
+  background: rgb(255 255 255 / 0.85);
+}
+
+.saasa-pdf-page {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.saasa-pdf-page-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.saasa-pdf-inplace-layer {
+  background: transparent;
+  pointer-events: none;
+}
+
+.saasa-pdf-inplace-layer.saasa-pdf-inplace-layer--active {
+  pointer-events: auto;
+}
+
+.saasa-pdf-inplace-line {
+  outline: none;
+  box-sizing: border-box;
+  font-synthesis: weight style;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: geometricPrecision;
+}
+
+/* PDF.js-style: invisible until focused/edited — PDF canvas stays visible underneath */
+.saasa-pdf-inplace-line.saasa-pdf-inplace-line--focused,
+.saasa-pdf-inplace-line.saasa-pdf-inplace-line--edited,
+.saasa-pdf-inplace-line.saasa-pdf-inplace-line--cleared {
+  background: #ffffff !important;
+  color: #111827 !important;
+  overflow: hidden;
+  z-index: 3;
+}
+
+.saasa-pdf-inplace-line.saasa-pdf-inplace-line--cleared {
+  color: transparent !important;
+  min-height: 1em;
+}
+
+.saasa-pdf-line-mask {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  background: #ffffff;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.saasa-pdf-inplace-line.saasa-pdf-inplace-line--focused {
+  box-shadow: 0 0 0 2px rgb(59 130 246 / 0.45);
+}
+
+.saasa-pdf-page--text-edit {
+  /* PDF canvas stays visible underneath */
+}
+
+.saasa-pdf-text-layer {
+  background: transparent;
+}
+
+.saasa-pdf-text-layer:not(.saasa-pdf-text-layer--editing) {
+  display: none !important;
+}
+
+.saasa-pdf-text-layer.saasa-pdf-text-layer--editing .saasa-pdf-text-line {
+  cursor: text;
+  background: transparent;
+  color: transparent;
+  caret-color: #0f172a;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.saasa-pdf-text-layer.saasa-pdf-text-layer--editing .saasa-pdf-text-line--focused,
+.saasa-pdf-text-layer.saasa-pdf-text-layer--editing .saasa-pdf-text-line[data-saasa-edited='1'] {
+  background: #ffffff;
+  color: #0f172a;
+  z-index: 2;
+}
+
+.saasa-pdf-text-layer.saasa-pdf-text-layer--editing .saasa-pdf-text-line--focused {
+  box-shadow: 0 0 0 2px rgb(59 130 246 / 0.4);
+}
+
+.saasa-txt-editable:focus {
+  outline: none;
+}
+
+/* Add Lead / Add Client contacts: Director + Team Member share the same columns. */
+.contact-person-row,
+.contact-person-row-header {
+  width: 100%;
+  min-width: 0;
+}
+
+.contact-person-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.contact-person-row-header {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .contact-person-row,
+  .contact-person-row-header {
+    display: grid;
+    grid-template-columns: 5.75rem minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1.85fr) auto;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .contact-person-row > *:not(:last-child),
+  .contact-person-row-header > * {
+    min-width: 0;
+  }
+}

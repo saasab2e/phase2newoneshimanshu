@@ -1,0 +1,40 @@
+import { getTenantDbName } from '@/lib/api';
+
+const STORAGE_PREFIX = 'hryantra.drawer-engine.dismissed.';
+
+function currentScopePrefix() {
+  const tenant = String(getTenantDbName() || '').trim() || 'no-tenant';
+  return `${tenant}::`;
+}
+
+function key(scope: string) {
+  return `${STORAGE_PREFIX}${currentScopePrefix()}${scope}`;
+}
+
+export function wasDrawerAlertDismissed(scope: string): boolean {
+  if (typeof sessionStorage === 'undefined') return false;
+  try {
+    return sessionStorage.getItem(key(scope)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function dismissDrawerAlert(scope: string) {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(key(scope), '1');
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+export function drawerAlertScope(entityKind: string, entityId: string, kind: 'missing' | 'overdue' | 'all') {
+  return `${entityKind}:${entityId}:${kind}`;
+}
+
+export function tenantOverdueAlertScope(tenantKey: string, userId?: string | null) {
+  const day = new Date().toISOString().slice(0, 10);
+  const uid = String(userId || '').trim() || 'user';
+  return `tenant-overdue:${tenantKey}:${uid}:${day}`;
+}

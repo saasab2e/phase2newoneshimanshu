@@ -1,0 +1,944 @@
+import type { BackendCandidate } from './api';
+import { displayCandidateEmail } from './bulkCvEmail';
+import {
+  buildEducationSummaryFromCvEntries,
+  isGarbageEducationSummary,
+} from './candidateEducation';
+import {
+  enrichBackendCandidateFromPhase1Snapshot,
+  getPhase1ProfileSnapshot,
+  PHASE1_CANDIDATE_TAG_LABEL,
+  resolvePhase1PersonalInfo,
+} from './phase1ProfileSnapshot';
+import { resolveCandidateExperienceYears } from './candidateExperience';
+import { normalizeCareerPreferencesRecord } from './normalizeCareerPreferencesRecord';
+import {
+  resolveCandidateAssignedJobTitles,
+  resolveCandidateListStage,
+} from './candidateListMapping';
+import type { CandidateProfileDrawerData } from '../components/drawers/CandidateProfileDrawer';
+import type { MatchCandidate } from '../components/matches/types';
+import { extractAuditMeta } from '../utils/auditMeta';
+import { normalizeCandidateSkillLabels } from './normalizeCandidateSkills';
+import { DEFAULT_INTERVIEW_TIMEZONE } from '../utils/inferTimezone';
+import {
+  formatInterviewTimeInTimezone,
+  getInterviewDateInputYmd,
+} from './interview-schedule-helpers';
+
+export function isValidObjectId(id: string): boolean {
+  return typeof id === 'string' && /^[a-f0-9]{24}$/i.test(id.trim());
+}
+
+export function extractApiData<T>(response: { data?: T | { data?: T } } | T): T {
+  if ((response as { data?: T | { data?: T } })?.data) {
+    const payload = (response as { data?: T | { data?: T } }).data;
+    if (payload && typeof payload === 'object' && 'data' in payload) {
+      return (payload as { data?: T }).data as T;
+    }
+    return payload as T;
+  }
+  return response as T;
+}
+
+const TAG_COLOR_PALETTE = [
+  '#2563eb',
+  '#7c3aed',
+  '#059669',
+  '#ea580c',
+  '#dc2626',
+  '#0891b2',
+  '#ca8a04',
+  '#4f46e5',
+];
+
+export function getTagColor(label: string) {
+  const seed = label.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return TAG_COLOR_PALETTE[seed % TAG_COLOR_PALETTE.length];
+}
+
+export function mapBackendStage(status: string): string {
+  switch (status) {
+    case 'NEW':
+      return 'Applied';
+    case 'INTERVIEWING':
+      return 'Interviewing';
+    case 'OFFERED':
+      return 'Offered';
+    case 'PLACED':
+      return 'Hired';
+    case 'REJECTED':
+      return 'Rejected';
+    default:
+      return status;
+  }
+}
+
+export function formatSalary(
+  salary?: BackendCandidate['salary']
+): { current: string; expected: string } {
+  if (!salary || (salary.min == null && salary.max == null)) {
+    return { current: '', expected: '' };
+  }
+
+  const prefix = salary.currency || '';
+  const min = salary.min != null ? `${prefix}${salary.min}` : '';
+  const max = salary.max != null ? `${prefix}${salary.max}` : '';
+
+  return {
+    current: '',
+    expected: [min, max].filter(Boolean).join(' - '),
+  };
+}
+
+export function formatSalaryFrequency(type?: string | null): string {
+  const value = String(type || '').trim().toUpperCase();
+  switch (value) {
+    case 'ANNUAL':
+    case 'ANNUALLY':
+    case 'YEARLY':
+      return 'Annually';
+    case 'MONTHLY':
+      return 'Monthly';
+    case 'HOURLY':
+      return 'Hourly';
+    case 'DAILY':
+      return 'Daily';
+    case 'WEEKLY':
+      return 'Weekly';
+    default:
+      return '';
+  }
+}
+
+export function formatCandidateSalaryDisplay(
+  amount: number | null | undefined,
+  currency?: string | null,
+  frequency?: string | null
+): string {
+  if (amount == null || !Number.isFinite(Number(amount))) return '';
+  const num = Number(amount);
+  const currencyCode = String(currency || '').trim();
+  const freqLabel = formatSalaryFrequency(frequency);
+  const formattedNumber = num.toLocaleString();
+  const head = currencyCode ? `${currencyCode} ${formattedNumber}` : formattedNumber;
+  return freqLabel ? `${head} / ${freqLabel}` : head;
+}
+
+function joinNameParts(...parts: Array<string | null | undefined>): string {
+  return parts
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+}
+
+/** Avoid "First Middle Middle Last" when lastName already contains middleName from legacy sync. */
+export function joinCandidateNameParts(
+  firstName?: string | null,
+  middleName?: string | null,
+  lastName?: string | null,
+): string {
+  const first = String(firstName || '').trim();
+  let middle = String(middleName || '').trim();
+  let last = String(lastName || '').trim();
+  const middleLower = middle.toLowerCase();
+
+  if (middle && last) {
+    const lastLower = last.toLowerCase();
+    if (lastLower === middleLower) {
+      last = '';
+    } else if (lastLower.startsWith(`${middleLower} `)) {
+      last = last.slice(middle.length).trim();
+    }
+  }
+
+  if (middle && first) {
+    const firstLower = first.toLowerCase();
+    if (firstLower.endsWith(` ${middleLower}`) || firstLower === middleLower) {
+      middle = '';
+    }
+  }
+
+  return joinNameParts(first, middle, last);
+}
+
+function normalizeNameToken(token: string): string {
+  const word = String(token || '').trim();
+  if (!word) return '';
+  if (word.length > 1 && word === word.toUpperCase() && /[A-Z]/.test(word)) {
+    return word.charAt(0) + word.slice(1).toLowerCase();
+  }
+  if (word === word.toLowerCase()) {
+    return word.charAt(0).toUpperCase() + word.slice(1);
+  }
+  return word;
+}
+
+/** Title-case stray ALL CAPS / lowercase tokens so list rows match profile names. */
+export function normalizePersonDisplayName(name: string): string {
+  return String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(normalizeNameToken)
+    .join(' ');
+}
+
+function splitCanonicalDisplayName(displayName: string): {
+  firstName: string;
+  middleName: string;
+  lastName: string;
+} {
+  const tokens = String(displayName || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!tokens.length) return { firstName: '', middleName: '', lastName: '' };
+  if (tokens.length === 1) return { firstName: tokens[0], middleName: '', lastName: '' };
+  if (tokens.length === 2) return { firstName: tokens[0], middleName: '', lastName: tokens[1] };
+  return {
+    firstName: tokens[0],
+    middleName: tokens.slice(1, -1).join(' '),
+    lastName: tokens[tokens.length - 1],
+  };
+}
+
+/** Canonical display + split parts for table, drawer header, and Basic Information. */
+export function resolveCandidateNameParts(
+  raw: BackendCandidate,
+  opts?: { alreadyEnriched?: boolean },
+): { firstName: string; middleName: string; lastName: string; displayName: string } {
+  const displayName = resolveCandidateDisplayName(raw, opts);
+  const parts = splitCanonicalDisplayName(displayName);
+  return { ...parts, displayName };
+}
+
+function nameDisplayScore(name: string): number {
+  const tokens = name.split(/\s+/).filter(Boolean);
+  const unique = new Set(tokens.map((token) => token.toLowerCase()));
+  return unique.size * 10 + tokens.length;
+}
+
+function pickRicherDisplayName(...candidates: string[]): string {
+  const valid = candidates.map((value) => value.trim()).filter(Boolean);
+  if (!valid.length) return '';
+  return valid.sort((a, b) => {
+    const scoreDiff = nameDisplayScore(b) - nameDisplayScore(a);
+    if (scoreDiff !== 0) return scoreDiff;
+    return b.length - a.length;
+  })[0];
+}
+
+/** Single source of truth for candidate name in table, drawer, and exports. */
+export function resolveCandidateDisplayName(
+  raw: BackendCandidate,
+  opts?: { alreadyEnriched?: boolean },
+): string {
+  const c = opts?.alreadyEnriched ? raw : enrichBackendCandidateFromPhase1Snapshot(raw);
+  const extra =
+    c.extraData && typeof c.extraData === 'object' && !Array.isArray(c.extraData)
+      ? (c.extraData as Record<string, unknown>)
+      : null;
+  const snap = getPhase1ProfileSnapshot(extra);
+  const pi = resolvePhase1PersonalInfo(snap, c);
+  const middleName = String(
+    (c as BackendCandidate & { middleName?: string | null }).middleName || pi.middleName || '',
+  ).trim();
+
+  const phase1Full = joinCandidateNameParts(pi.firstName, pi.middleName, pi.lastName);
+  const enrichedFull = joinCandidateNameParts(c.firstName, middleName, c.lastName);
+  const basicFull = joinCandidateNameParts(c.firstName, null, c.lastName);
+
+  const namePart = phase1Full
+    ? phase1Full
+    : pickRicherDisplayName(phase1Full, enrichedFull, basicFull);
+
+  const emailPart = displayCandidateEmail(c.email?.trim() || '');
+  const phonePart = c.phone?.trim() || '';
+  const shortId = c.id && c.id.length >= 6 ? c.id.slice(-6) : c.id;
+
+  return normalizePersonDisplayName(
+    namePart ||
+      emailPart ||
+      phonePart ||
+      (shortId ? `Candidate …${shortId}` : 'Candidate'),
+  );
+}
+
+type BackendCandidateInterview = NonNullable<BackendCandidate['interviews']>[number];
+
+export function findJobTitleById(jobId: string, matches?: BackendCandidate['matches']): string | undefined {
+  if (!jobId || !Array.isArray(matches)) return undefined;
+  for (const match of matches) {
+    if (match?.job?.id === jobId && match.job.title) {
+      return match.job.title;
+    }
+  }
+  return undefined;
+}
+
+function buildAssignedJobsList(c: BackendCandidate): NonNullable<CandidateProfileDrawerData['assignedJobs']> {
+  type Row = NonNullable<CandidateProfileDrawerData['assignedJobs']>[number];
+  const byKey = new Map<string, Row>();
+
+  const upsert = (row: Row) => {
+    const key = row.id ? String(row.id) : row.title.trim();
+    if (!key) return;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, row);
+      return;
+    }
+    byKey.set(key, {
+      ...existing,
+      ...row,
+      title: row.title || existing.title,
+      stage: row.stage || existing.stage,
+      status: row.status || existing.status,
+      movedAt: row.movedAt || existing.movedAt,
+      notes: row.notes || existing.notes,
+      pipelineEntryId: row.pipelineEntryId || existing.pipelineEntryId,
+      isPipelineEntry: Boolean(row.isPipelineEntry || existing.isPipelineEntry),
+      department: row.department || existing.department,
+    });
+  };
+
+  for (const entry of c.pipelineEntries || []) {
+    const jobId = String(entry.jobId || '').trim();
+    const match = jobId ? c.matches?.find((m) => m.job?.id === jobId) : undefined;
+    const titleFromMatch = match?.job?.title || (jobId ? findJobTitleById(jobId, c.matches) : undefined);
+    const title = String(titleFromMatch || '').trim() || 'Untitled job';
+    const department = match?.job?.client?.companyName || null;
+    upsert({
+      id: jobId || null,
+      pipelineEntryId: entry.id ? String(entry.id) : null,
+      title,
+      department,
+      stage: entry.stage?.name || null,
+      movedAt: entry.movedAt || null,
+      notes: entry.notes || null,
+      status: null,
+      isPipelineEntry: true,
+    });
+  }
+
+  for (const match of c.matches || []) {
+    const id = match.job?.id ? String(match.job.id) : '';
+    const title = String(match.job?.title || '').trim();
+    if (!id && !title) continue;
+    upsert({
+      id: id || null,
+      title: title || 'Untitled job',
+      status: match.status || null,
+      stage: c.stage || null,
+    });
+  }
+
+  for (const application of c.applications || []) {
+    const jobId = String(application.jobId || application.job?.id || '').trim();
+    const title = String(application.job?.title || findJobTitleById(jobId, c.matches) || '').trim();
+    if (!jobId && !title) continue;
+    upsert({
+      id: jobId || null,
+      title: title || 'Untitled job',
+      status: application.status || null,
+      stage: c.stage || null,
+    });
+  }
+
+  const titleArr = Array.isArray(c.assignedJobTitles) ? c.assignedJobTitles : [];
+  const idArr = Array.isArray(c.assignedJobs) ? c.assignedJobs : [];
+  const max = Math.max(titleArr.length, idArr.length);
+  for (let i = 0; i < max; i += 1) {
+    const id = idArr[i] ? String(idArr[i]) : '';
+    const title = String(titleArr[i] || findJobTitleById(id, c.matches) || '').trim();
+    if (!id && !title) continue;
+    upsert({
+      id: id || null,
+      title: title || 'Untitled job',
+      status: null,
+      stage: c.stage || null,
+    });
+  }
+
+  return Array.from(byKey.values());
+}
+
+function mapClientReplyRows(
+  rows: BackendCandidate['clientReplies'],
+): NonNullable<CandidateProfileDrawerData['clientReplies']> {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((reply, index) => ({
+    id: String(reply.id || `client-reply-${index}`),
+    clientName: String(reply.clientName || '').trim() || 'Client',
+    jobTitle: reply.jobTitle || null,
+    tag: reply.tag || null,
+    comments: reply.comments || null,
+    documentUrl: reply.documentUrl || null,
+    documentFileName: reply.documentFileName || null,
+    documentLabel: reply.documentLabel || null,
+    repliedAt: reply.repliedAt ? String(reply.repliedAt) : null,
+    submissionType: reply.submissionType || null,
+  }));
+}
+
+function parseClientRepliesFromExtraData(
+  extraData: BackendCandidate['extraData'],
+): NonNullable<CandidateProfileDrawerData['clientReplies']> {
+  if (!extraData || typeof extraData !== 'object' || Array.isArray(extraData)) return [];
+  const rows = (extraData as { clientReviews?: BackendCandidate['clientReplies'] }).clientReviews;
+  return mapClientReplyRows(rows);
+}
+
+function parseClientRepliesFromActivityFeed(
+  items: NonNullable<CandidateProfileDrawerData['activity']>,
+): NonNullable<CandidateProfileDrawerData['clientReplies']> {
+  const replies: NonNullable<CandidateProfileDrawerData['clientReplies']> = [];
+  for (const item of items) {
+    const title = String(item.title || '');
+    const description = String(item.description || '');
+    if (
+      !/^client review submitted/i.test(title) &&
+      !/^client uploaded/i.test(title) &&
+      !description.includes('[Client Tag]') &&
+      !description.includes('[Client Upload]')
+    ) {
+      continue;
+    }
+    const tagLine = description
+      .split('|')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith('[Client Tag]'));
+    const rest = tagLine ? tagLine.replace('[Client Tag]', '').trim() : '';
+    const dashIdx = rest.indexOf(' - ');
+    const tag = dashIdx >= 0 ? rest.slice(0, dashIdx).trim() : rest;
+    const comments = dashIdx >= 0 ? rest.slice(dashIdx + 3).trim() : '';
+    replies.push({
+      id: item.id,
+      clientName: item.clientName || 'Client',
+      jobTitle: item.relatedJob || null,
+      tag: tag || null,
+      comments: comments || null,
+      documentUrl: null,
+      documentFileName: null,
+      documentLabel: null,
+      repliedAt: item.timestamp || null,
+      submissionType: null,
+    });
+  }
+  return replies;
+}
+
+export function mapCandidateProfile(raw: BackendCandidate): CandidateProfileDrawerData {
+  const c = enrichBackendCandidateFromPhase1Snapshot(raw);
+  const phase1Snap = getPhase1ProfileSnapshot(
+    c.extraData && typeof c.extraData === 'object' && !Array.isArray(c.extraData)
+      ? (c.extraData as Record<string, unknown>)
+      : null
+  );
+  const resumeFileName = phase1Snap?.resume?.fileName?.trim() || 'Resume';
+  const resumeAtsScore =
+    typeof (c as BackendCandidate & { resumeAtsScore?: number }).resumeAtsScore === 'number'
+      ? (c as BackendCandidate & { resumeAtsScore?: number }).resumeAtsScore
+      : typeof phase1Snap?.resume?.atsScore === 'number'
+        ? phase1Snap.resume.atsScore
+        : null;
+
+  const fullName = resolveCandidateDisplayName(c, { alreadyEnriched: true });
+  const nameParts = resolveCandidateNameParts(c, { alreadyEnriched: true });
+  const latestMatch = c.matches?.[0];
+  const latestInterview = c.interviews?.[0];
+  const salary = formatSalary(c.salary);
+  const assignedJobTitles = resolveCandidateAssignedJobTitles(c);
+  const primaryAssignedJobId =
+    (Array.isArray(c.assignedJobs) ? c.assignedJobs.find((id) => String(id || '').trim()) : null) ||
+    c.applications?.find((row) => row?.jobId)?.jobId ||
+    c.pipelineEntries?.find((row) => row?.jobId)?.jobId ||
+    latestMatch?.job?.id ||
+    null;
+  const stage = resolveCandidateListStage(c);
+  const skillLabels = normalizeCandidateSkillLabels(
+    c.skills ?? (c as BackendCandidate & { recruiterSkills?: unknown }).recruiterSkills,
+  );
+  const skillsCount = skillLabels.length;
+  const skillsMatch = Math.min(95, skillsCount > 0 ? 55 + skillsCount * 8 : 38);
+  const experienceFit = Math.min(96, c.experience != null ? 45 + c.experience * 6 : 35);
+  const educationFit = c.currentTitle ? 72 : 48;
+  const keywordMatch = Math.min(
+    94,
+    Math.round((skillsMatch * 0.45) + (experienceFit * 0.35) + (educationFit * 0.2))
+  );
+  const overall = Math.round((skillsMatch + experienceFit + educationFit + keywordMatch) / 4);
+  const insightItems: NonNullable<CandidateProfileDrawerData['aiScore']>['insights'] = [];
+  const backendAi = (c as BackendCandidate).aiCandidateAnalysis;
+  const backendBreakdown = backendAi?.breakdown || {};
+  const aiSkillsMatch =
+    typeof backendBreakdown.skillsMatch === 'number' && Number.isFinite(backendBreakdown.skillsMatch)
+      ? Math.max(0, Math.min(100, Math.round(backendBreakdown.skillsMatch)))
+      : skillsMatch;
+  const aiExperienceFit =
+    typeof backendBreakdown.experienceFit === 'number' && Number.isFinite(backendBreakdown.experienceFit)
+      ? Math.max(0, Math.min(100, Math.round(backendBreakdown.experienceFit)))
+      : experienceFit;
+  const aiEducationFit =
+    typeof backendBreakdown.educationFit === 'number' && Number.isFinite(backendBreakdown.educationFit)
+      ? Math.max(0, Math.min(100, Math.round(backendBreakdown.educationFit)))
+      : educationFit;
+  const aiKeywordMatch =
+    typeof backendBreakdown.keywordMatch === 'number' && Number.isFinite(backendBreakdown.keywordMatch)
+      ? Math.max(0, Math.min(100, Math.round(backendBreakdown.keywordMatch)))
+      : keywordMatch;
+
+  if (skillsCount > 0) {
+    insightItems.push({
+      type: 'strength',
+      text: `${fullName} shows ${skillsCount} relevant skill${skillsCount > 1 ? 's' : ''} in the profile.`,
+    });
+  } else {
+    insightItems.push({
+      type: 'gap',
+      text: 'Skills are missing or incomplete, which may lower the confidence of the screening result.',
+    });
+  }
+
+  if ((c.experience ?? 0) >= 3) {
+    insightItems.push({
+      type: 'strength',
+      text: `Experience level looks aligned with mid-level hiring expectations at ${c.experience} years.`,
+    });
+  } else {
+    insightItems.push({
+      type: 'gap',
+      text: 'Experience appears limited for roles that expect deeper hands-on exposure.',
+    });
+  }
+
+  if (!c.resume) {
+    insightItems.push({
+      type: 'gap',
+      text: 'Resume file is not attached, so profile evaluation is based only on available record data.',
+    });
+  } else {
+    insightItems.push({
+      type: 'strength',
+      text: 'Resume is available for detailed recruiter and AI review.',
+    });
+  }
+
+  const fallbackActivityItems: NonNullable<CandidateProfileDrawerData['activity']> = [
+    {
+      id: `candidate-created-${c.id}`,
+      type: 'note-added',
+      title: 'Candidate profile created',
+      description: `${fullName} was added to the system.`,
+      timestamp: c.createdAt,
+      performedBy: {
+        name: c.assignedTo?.name || 'System',
+      },
+      relatedJob: latestMatch?.job?.title || null,
+    },
+  ];
+
+  if (c.resume) {
+    fallbackActivityItems.push({
+      id: `resume-parsed-${c.id}`,
+      type: 'resume-parsed',
+      title: 'Resume parsed',
+      description: 'Resume file is attached and ready for recruiter review.',
+      timestamp: c.createdAt,
+      performedBy: {
+        name: 'AI Parser',
+      },
+      relatedJob: latestMatch?.job?.title || null,
+    });
+  }
+
+  if (latestMatch) {
+    fallbackActivityItems.push({
+      id: `pipeline-${latestMatch.id}`,
+      type: 'added-to-pipeline',
+      title: 'Added to pipeline',
+      description: `${fullName} was added to the hiring pipeline.`,
+      timestamp: c.createdAt,
+      performedBy: {
+        name: c.assignedTo?.name || 'Team Member',
+      },
+      relatedJob: latestMatch.job?.title || null,
+    });
+  }
+
+  if (latestInterview?.scheduledAt) {
+    fallbackActivityItems.push({
+      id: `interview-${latestInterview.id}`,
+      type: 'interview-scheduled',
+      title: 'Interview scheduled',
+      description: `Interview status: ${latestInterview.status || 'scheduled'}.`,
+      timestamp: latestInterview.scheduledAt,
+      performedBy: {
+        name: c.assignedTo?.name || 'Team Member',
+      },
+      relatedJob: latestMatch?.job?.title || null,
+    });
+  }
+
+  const fallbackNotes: NonNullable<CandidateProfileDrawerData['notes']> = [
+    {
+      id: `note-screening-${c.id}`,
+      text: c.resume
+        ? 'Resume reviewed internally. Candidate looks promising for initial recruiter screening.'
+        : 'Profile created, but resume is still missing and needs follow-up.',
+      createdAt: c.createdAt,
+      recruiter: {
+        id: c.assignedTo?.id,
+        name: c.assignedTo?.name || 'Team Member',
+        avatar: c.assignedTo?.avatar || null,
+      },
+      tags: ['Screening', c.resume ? 'Resume' : 'Follow-up'],
+      isPinned: Boolean(c.resume),
+    },
+  ];
+
+  if (latestInterview?.scheduledAt) {
+    fallbackNotes.push({
+      id: `note-interview-${latestInterview.id}`,
+      text: 'Interview coordination is active. Keep communication warm and confirm availability before the next round.',
+      createdAt: latestInterview.scheduledAt,
+      recruiter: {
+        id: c.assignedTo?.id,
+        name: c.assignedTo?.name || 'Team Member',
+        avatar: c.assignedTo?.avatar || null,
+      },
+      tags: ['Interview', 'Follow-up'],
+      isPinned: false,
+    });
+  }
+
+  const isPhase1Candidate =
+    Boolean((c as BackendCandidate).isPhase1Candidate) ||
+    String(c.source || '').trim().toLowerCase() === 'phase1' ||
+    Boolean(phase1Snap);
+  const poolOrigin = (c as BackendCandidate).poolOrigin ?? null;
+
+  const fallbackTags = Array.from(
+    new Set([
+      ...(Array.isArray(c.tags) ? c.tags.map((tag) => String(tag).trim()).filter(Boolean) : []),
+      ...skillLabels.slice(0, 2),
+      (c.experience ?? 0) >= 5 ? 'Senior' : '',
+      c.source?.toLowerCase().includes('referral') ? 'Referral' : '',
+      c.location?.toLowerCase().includes('remote') ? 'Remote Candidate' : '',
+      isPhase1Candidate ? PHASE1_CANDIDATE_TAG_LABEL : '',
+    ].filter(Boolean))
+  ).map((tag) => ({
+    id: `tag-${String(tag).toLowerCase().replace(/\s+/g, '-')}`,
+    label: String(tag),
+    color: getTagColor(String(tag)),
+  }));
+
+  const careerPrefs = c.careerPreferences || null;
+  const mergedCareerPrefsRaw =
+    careerPrefs || phase1Snap?.careerPreferences
+      ? {
+          ...((phase1Snap?.careerPreferences as Record<string, unknown> | null) || {}),
+          ...((careerPrefs as Record<string, unknown> | null) || {}),
+        }
+      : null;
+  const mergedCareerPrefs = normalizeCareerPreferencesRecord(
+    mergedCareerPrefsRaw,
+    c,
+  ) as CandidateProfileDrawerData['careerPreferences'] | null;
+  const expectedSalaryFromPrefs = formatCandidateSalaryDisplay(
+    c.expectedSalary ?? mergedCareerPrefs?.preferredSalary ?? null,
+    mergedCareerPrefs?.preferredCurrency || c.salary?.currency || null,
+    mergedCareerPrefs?.preferredSalaryType || null
+  );
+  const expectedSalaryDisplay =
+    expectedSalaryFromPrefs ||
+    salary.expected ||
+    (c.expectedSalary != null && Number.isFinite(Number(c.expectedSalary))
+      ? `${c.salary?.currency || ''} ${Number(c.expectedSalary).toLocaleString()}`.trim()
+      : '');
+
+  const activityItems = c.activityFeed?.length ? c.activityFeed : fallbackActivityItems;
+  const mappedClientReplies = mapClientReplyRows(c.clientReplies);
+  const clientReplies =
+    mappedClientReplies.length > 0
+      ? mappedClientReplies
+      : parseClientRepliesFromExtraData(c.extraData).length > 0
+        ? parseClientRepliesFromExtraData(c.extraData)
+        : parseClientRepliesFromActivityFeed(activityItems);
+
+  return {
+    id: c.id,
+    name: fullName,
+    firstName: nameParts.firstName || c.firstName || null,
+    middleName: nameParts.middleName || null,
+    lastName: nameParts.lastName || c.lastName || null,
+    avatar: c.avatar || phase1Snap?.personalInfo?.profilePhotoUrl || null,
+    currentTitle: c.currentTitle || null,
+    currentCompany: c.currentCompany || null,
+    stage,
+    experience: resolveCandidateExperienceYears(c) ?? 0,
+    location: c.location || '—',
+    email: displayCandidateEmail(c.email) || c.email || '',
+    phone: c.phone || '—',
+    linkedIn: c.linkedIn || null,
+    designation: c.currentTitle || null,
+    expectedSalary: expectedSalaryDisplay || '—',
+    expectedSalaryValue: c.expectedSalary ?? mergedCareerPrefs?.preferredSalary ?? null,
+    currentSalaryValue: c.currentSalary ?? mergedCareerPrefs?.currentSalary ?? null,
+    salaryCurrency: mergedCareerPrefs?.preferredCurrency || c.salary?.currency || 'INR',
+    noticePeriod: c.noticePeriod || mergedCareerPrefs?.noticePeriod || '—',
+    careerPreferences: mergedCareerPrefs,
+    // Prefer the explicitly-assigned job (set via the candidate edit modal) over
+    // any pre-existing Match record so changing the assignment reflects in the
+    // drawer + dropdown immediately after save. If the title can't be resolved
+    // locally we leave it empty — the drawer enriches it from the loaded jobs
+    // list before display.
+    assignedJob: assignedJobTitles[0] || latestMatch?.job?.title || '—',
+    assignedJobId: primaryAssignedJobId ? String(primaryAssignedJobId) : null,
+    assignedJobs: buildAssignedJobsList(c),
+    recruiter: c.assignedTo?.name || 'Unassigned',
+    recruiterId: c.assignedTo?.id || null,
+    source: c.source || '—',
+    status: c.status || 'NEW',
+    availability:
+      c.availability ||
+      mergedCareerPrefs?.availabilityToStart ||
+      (c.status === 'ACTIVE' ? 'available' : c.status === 'PLACED' ? 'unavailable' : 'limited'),
+    resumeUrl: c.resume || c.resumeUrl || null,
+    summary:
+      c.notes?.trim() ||
+      c.cvSummary?.trim() ||
+      (skillLabels.length ? `Skills: ${skillLabels.join(', ')}` : null),
+    cvAddress: c.address || null,
+    cvCity: c.city || null,
+    cvCountry: c.country || null,
+    cvAvailability: c.availability || mergedCareerPrefs?.availabilityToStart || null,
+    cvExpectedSalary:
+      formatCandidateSalaryDisplay(
+        c.expectedSalary ?? mergedCareerPrefs?.preferredSalary ?? null,
+        mergedCareerPrefs?.preferredCurrency || c.salary?.currency || null,
+        mergedCareerPrefs?.preferredSalaryType || null
+      ) || salary.expected || null,
+    cvCurrentSalary:
+      formatCandidateSalaryDisplay(
+        c.currentSalary ?? mergedCareerPrefs?.currentSalary ?? null,
+        mergedCareerPrefs?.currentCurrency || mergedCareerPrefs?.preferredCurrency || c.salary?.currency || null,
+        mergedCareerPrefs?.currentSalaryType || null
+      ) || null,
+    cvEducation: (() => {
+      const entries = Array.isArray(c.cvEducationEntries) ? c.cvEducationEntries : [];
+      const fromEntries = buildEducationSummaryFromCvEntries(
+        entries as Array<Record<string, unknown>>
+      );
+      if (fromEntries) return fromEntries;
+      const raw = c.education || null;
+      if (raw && isGarbageEducationSummary(raw)) return null;
+      return raw;
+    })(),
+    cvEducationEntries: Array.isArray(c.cvEducationEntries) ? c.cvEducationEntries : [],
+    cvWorkExperienceEntries: Array.isArray(c.cvWorkExperienceEntries) ? c.cvWorkExperienceEntries : [],
+    cvPortfolioLinks: c.cvPortfolioLinks || [],
+    cvCertifications:
+      (Array.isArray(c.certifications) && c.certifications.length
+        ? c.certifications
+        : Array.isArray((c as any).certificationsList)
+          ? (c as any).certificationsList
+          : []) || [],
+    cvLanguages: (() => {
+      const snap = phase1Snap;
+      if (Array.isArray(snap?.languages) && snap.languages.length) {
+        return snap.languages
+          .map((l) => {
+            const name = String(l?.name || '').trim();
+            const prof = String(l?.proficiency || '').trim();
+            return prof ? `${name} (${prof})` : name;
+          })
+          .filter(Boolean);
+      }
+      if (Array.isArray(c.languages) && c.languages.length) return c.languages;
+      const recruiterLangs = (c as BackendCandidate & { recruiterLanguages?: string[] }).recruiterLanguages;
+      if (Array.isArray(recruiterLangs) && recruiterLangs.length) return recruiterLangs;
+      return [];
+    })(),
+    cvPortfolio: c.portfolio || null,
+    cvWebsite: c.website || null,
+    cvNotes: c.cvSummary || c.notes || null,
+    cvPreferredLocation:
+      c.preferredLocation ||
+      (Array.isArray(mergedCareerPrefs?.preferredLocations) && mergedCareerPrefs?.preferredLocations.length
+        ? mergedCareerPrefs.preferredLocations[0]
+        : null) ||
+      mergedCareerPrefs?.currentLocation ||
+      null,
+    cvSkills: skillLabels,
+    cvSummary: c.cvSummary || null,
+    extraData:
+      c.extraData && typeof c.extraData === 'object' && !Array.isArray(c.extraData)
+        ? (c.extraData as Record<string, unknown>)
+        : null,
+    isPhase1Candidate,
+    poolOrigin,
+    tags: (() => {
+      const base = c.tagObjects?.length ? c.tagObjects : fallbackTags;
+      if (!isPhase1Candidate) return base;
+      const hasPhase1 = base.some((t) => String(t.label).toLowerCase() === 'phase 1');
+      if (hasPhase1) return base;
+      return [
+        { id: 'tag-phase-1', label: PHASE1_CANDIDATE_TAG_LABEL, color: getTagColor(PHASE1_CANDIDATE_TAG_LABEL) },
+        ...base,
+      ];
+    })(),
+    notes: c.internalNotes?.length ? c.internalNotes : fallbackNotes,
+    files:
+      c.resume || c.resumeUrl
+        ? [{ name: resumeFileName, url: c.resume || c.resumeUrl || '' }]
+        : [],
+    activity: activityItems,
+    clientReplies,
+    clientSubmissions: Array.isArray(c.clientSubmissions)
+      ? c.clientSubmissions.map((row, index) => ({
+          id: String(row.id || `client-submission-${index}`),
+          clientName: String(row.clientName || '').trim() || 'Client',
+          jobTitle: row.jobTitle || null,
+          reviewUrl: row.reviewUrl || null,
+          submittedAt: row.submittedAt ? String(row.submittedAt) : null,
+        }))
+      : [],
+    scheduledInterviews: (c.interviews || [])
+      .filter((interview) => Boolean(interview.scheduledAt))
+      .map((interview, index) => {
+        const timezone =
+          (interview as BackendCandidateInterview).timezone || DEFAULT_INTERVIEW_TIMEZONE;
+        const scheduledAt = interview.scheduledAt || '';
+        return {
+        id: interview.id,
+        candidateId: c.id,
+        jobId: interview.job?.id || latestMatch?.job?.id || null,
+        jobTitle: interview.job?.title || latestMatch?.job?.title || null,
+        // Backend stores human-friendly type label in `round` (e.g. "HR Screening").
+        // If older records stored numeric rounds, we still fall back safely.
+        type: interview.round || (interview as any).type || interview.status || 'Interview',
+        round: index + 1,
+        date: scheduledAt ? getInterviewDateInputYmd(scheduledAt, timezone) : '',
+        time: scheduledAt ? formatInterviewTimeInTimezone(scheduledAt, timezone) : '',
+        duration: interview.duration ? `${interview.duration} mins` : '1 hour',
+        timezone,
+        mode:
+          interview.mode === 'in-person'
+            ? 'in-person'
+            : interview.mode === 'phone'
+              ? 'phone'
+              : 'video',
+        platform:
+          (interview as BackendCandidateInterview).platform === 'GOOGLE_MEET'
+            ? 'Google Meet'
+            : (interview as BackendCandidateInterview).platform === 'ZOOM'
+              ? 'Zoom'
+              : null,
+        meetingLink: (interview as BackendCandidateInterview).meetingLink || null,
+        location: (interview as BackendCandidateInterview).location || null,
+        phoneNumber: c.phone || null,
+        interviewers: interview.interviewer
+          ? [{ id: interview.interviewer.id, name: interview.interviewer.name, role: 'Interviewer' }]
+          : c.assignedTo
+            ? [{ id: c.assignedTo.id, name: c.assignedTo.name, role: 'Interviewer' }]
+          : [],
+        notes: (interview as BackendCandidateInterview).notes || '',
+        sendCandidateInvite: true,
+        sendInterviewerInvite: true,
+        status:
+          String(interview.status || '').toUpperCase() === 'COMPLETED'
+            ? 'completed'
+            : String(interview.status || '').toUpperCase() === 'CANCELLED'
+              ? 'cancelled'
+              : 'scheduled',
+      };
+      }),
+    aiScore: {
+      overall:
+        typeof backendAi?.overall === 'number' && Number.isFinite(backendAi.overall)
+          ? Math.max(0, Math.min(100, Math.round(backendAi.overall)))
+          : resumeAtsScore != null
+            ? Math.max(0, Math.min(100, Math.round(resumeAtsScore)))
+            : overall,
+      source: backendAi?.source || (resumeAtsScore != null ? 'resume_ats' : 'estimated'),
+      jobTitle: backendAi?.jobTitle || latestMatch?.job?.title || null,
+      breakdown: {
+        skillsMatch: aiSkillsMatch,
+        experienceFit: aiExperienceFit,
+        educationFit: aiEducationFit,
+        keywordMatch: aiKeywordMatch,
+      },
+      insights:
+        Array.isArray(backendAi?.insights) && backendAi.insights.length
+          ? backendAi.insights
+              .filter((item) => item && typeof item === 'object' && typeof item.text === 'string' && item.text.trim().length > 0)
+              .map((item) => ({
+                type: item.type === 'gap' ? 'gap' : 'strength',
+                text: String(item.text),
+              }))
+          : insightItems,
+    },
+    auditMeta: extractAuditMeta(c as Record<string, unknown>),
+  };
+}
+
+export function enrichProfileWithMatchData(
+  profile: CandidateProfileDrawerData,
+  match: MatchCandidate | null | undefined,
+  jobTitle?: string | null
+): CandidateProfileDrawerData {
+  if (!match) return profile;
+
+  const ai = match.explanation?.aiEngine;
+  const breakdown = ai?.breakdown;
+  const insights: NonNullable<CandidateProfileDrawerData['aiScore']>['insights'] = [
+    ...(profile.aiScore?.insights || []),
+  ];
+
+  if (match.explanation?.text?.trim()) {
+    insights.push({ type: 'strength', text: match.explanation.text.trim() });
+  }
+  if (ai?.suggestion?.trim()) {
+    insights.push({ type: 'gap', text: ai.suggestion.trim() });
+  }
+  if (match.explanation.matchedSkills?.length) {
+    insights.push({
+      type: 'strength',
+      text: `Matched skills: ${match.explanation.matchedSkills.join(', ')}`,
+    });
+  }
+  if (match.explanation.missingSkills?.length) {
+    insights.push({
+      type: 'gap',
+      text: `Missing skills: ${match.explanation.missingSkills.join(', ')}`,
+    });
+  }
+  if (ai?.verdict?.trim()) {
+    insights.push({ type: 'strength', text: `Verdict: ${ai.verdict}` });
+  }
+
+  const skillsMatch = typeof breakdown?.skills === 'number' ? breakdown.skills : match.score;
+  const experienceFit = typeof breakdown?.experience === 'number' ? breakdown.experience : skillsMatch;
+  const educationFit = typeof breakdown?.semantic === 'number' ? breakdown.semantic : skillsMatch;
+  const keywordMatch = typeof breakdown?.cultural === 'number' ? breakdown.cultural : educationFit;
+
+  return {
+    ...profile,
+    assignedJob: jobTitle && jobTitle !== '—' ? jobTitle : profile.assignedJob,
+    aiScore: {
+      overall: Math.max(0, Math.min(100, Math.round(match.score))),
+      source: 'match',
+      jobTitle: jobTitle || profile.aiScore?.jobTitle || profile.assignedJob || null,
+      breakdown: {
+        skillsMatch: Math.round(skillsMatch),
+        experienceFit: Math.round(experienceFit),
+        educationFit: Math.round(educationFit),
+        keywordMatch: Math.round(keywordMatch),
+      },
+      insights: insights.slice(0, 8),
+    },
+  };
+}

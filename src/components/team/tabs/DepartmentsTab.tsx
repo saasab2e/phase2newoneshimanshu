@@ -1,0 +1,341 @@
+'use client';
+
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Edit, Trash2, Users } from 'lucide-react';
+import { SHOW_TABLE_ROW_EDIT_ICON } from '../../../constants/tableUi';
+import { motion, AnimatePresence } from 'motion/react';
+import { toast } from 'sonner';
+import { getDepartments, deleteDepartment } from '../../../lib/api/teamApi';
+import type { Department } from '../../../types/team';
+import { AddDepartmentDrawer } from '../AddDepartmentDrawer';
+import { DepartmentMembersDrawer } from '../DepartmentMembersDrawer';
+import PaginationAll from '../../../components/PaginationAll';
+import { TABLE_PAGE_SIZE_OPTIONS, type TablePageSize } from '../../../constants/tablePagination';
+import { formatDateDMY } from '../../../utils/dateDisplay';
+import { useWorkspaceEntityAlerts } from '../../../hooks/useWorkspaceEntityAlerts';
+import { WorkspaceAlertTableCell, WorkspaceAlertTableHeader } from '../../ai/WorkspaceAlertTableCell';
+import {
+  PH2_TABLE_CARD_CLASS,
+  PH2_TABLE_BODY_SCROLL_CLASS,
+  PH2_TABLE_CARD_FOOTER_CLASS,
+  PH2_TABLE_CLASS,
+} from '../../../components/layout/Ph2ModulePageLayout';
+
+// Color mapping for role colors
+const roleColorMap: Record<string, string> = {
+  purple: 'bg-purple-100 text-purple-700',
+  blue: 'bg-blue-100 text-blue-700',
+  teal: 'bg-teal-100 text-teal-700',
+  green: 'bg-green-100 text-green-700',
+  amber: 'bg-amber-100 text-amber-700',
+  orange: 'bg-orange-100 text-orange-700',
+  red: 'bg-red-100 text-red-700',
+  gray: 'bg-gray-100 text-gray-600',
+};
+
+const getInitials = (firstName: string, lastName: string) => {
+  return `${firstName?.[0] || ''}${lastName?.[0] || ''}`.toUpperCase();
+};
+
+interface DepartmentWithMembers extends Department {
+  users?: Array<{
+    id: string;
+    firstName: string;
+    lastName: string;
+    designation?: string;
+    systemRole?: {
+      color: string;
+    };
+  }>;
+  _count?: {
+    users: number;
+  };
+}
+
+export const DepartmentsTab: React.FC = () => {
+  const [departments, setDepartments] = useState<DepartmentWithMembers[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAddDrawer, setShowAddDrawer] = useState(false);
+  const [showMembersDrawer, setShowMembersDrawer] = useState(false);
+  const [selectedDepartment, setSelectedDepartment] = useState<DepartmentWithMembers | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<TablePageSize>(10);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await getDepartments();
+      setDepartments(res.data || []);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to load departments');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const totalDepartments = departments.length;
+
+  const visibleDepartments = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return departments.slice(start, start + pageSize);
+  }, [currentPage, pageSize, departments]);
+
+  const { alertsByEntityId: workspaceAlertsByEntityId, showAlertColumn: showDepartmentAiAlertColumn } =
+    useWorkspaceEntityAlerts('DEPARTMENT', visibleDepartments.map((dept) => dept.id));
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(totalDepartments / pageSize));
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, pageSize, totalDepartments]);
+
+  const handleDelete = async (dept: DepartmentWithMembers) => {
+    if (deleteConfirm !== dept.id) {
+      setDeleteConfirm(dept.id);
+      return;
+    }
+
+    try {
+      await deleteDepartment(dept.id);
+      toast.success('Department deleted');
+      setDeleteConfirm(null);
+      removeDepartmentLocal(dept.id);
+      fetchData();
+    } catch (error: any) {
+      const errorMessage = error?.message || 'Failed to delete department';
+      if (errorMessage.includes('member') || errorMessage.includes('assigned')) {
+        toast.error(errorMessage);
+      } else {
+        toast.error(errorMessage);
+      }
+      setDeleteConfirm(null);
+    }
+  };
+
+  const handleMembersClick = (dept: DepartmentWithMembers) => {
+    setSelectedDepartment(dept);
+    setShowMembersDrawer(true);
+  };
+
+  const upsertDepartmentLocal = (dept: DepartmentWithMembers) => {
+    setDepartments((prev) => {
+      const exists = prev.some((item) => item.id === dept.id);
+      return exists ? prev.map((item) => (item.id === dept.id ? dept : item)) : [dept, ...prev];
+    });
+  };
+
+  const removeDepartmentLocal = (deptId: string) => {
+    setDepartments((prev) => prev.filter((dept) => dept.id !== deptId));
+  };
+
+  // Wire up the Add Department button from parent
+  useEffect(() => {
+    (window as any).openAddDepartmentDrawer = () => {
+      setSelectedDepartment(null);
+      setShowAddDrawer(true);
+    };
+    return () => {
+      delete (window as any).openAddDepartmentDrawer;
+    };
+  }, []);
+
+  const formatDate = (dateString: string) => {
+    return formatDateDMY(dateString);
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className={PH2_TABLE_CARD_CLASS}>
+        {loading ? (
+          <div className="p-8 space-y-4">
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="h-16 bg-slate-100 rounded-lg animate-pulse" />
+            ))}
+          </div>
+        ) : departments.length === 0 ? (
+          <div className="p-12 text-center">
+            <p className="text-slate-500 mb-4">No departments yet. Create your first department.</p>
+            <button
+              onClick={() => setShowAddDrawer(true)}
+              className="text-blue-600 hover:text-blue-700 font-medium"
+            >
+              + Add Department
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className={PH2_TABLE_BODY_SCROLL_CLASS}>
+              <table className={PH2_TABLE_CLASS}>
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Department Name</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Members</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Member Avatars</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">Created</th>
+                    {showDepartmentAiAlertColumn ? (
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">AI Alert</th>
+                    ) : null}
+                    <th className="px-6 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {visibleDepartments.map((dept) => {
+                    const memberCount = dept._count?.users || 0;
+                    const previewMembers = dept.users || [];
+                    const remainingCount = memberCount - previewMembers.length;
+
+                    return (
+                      <tr key={dept.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="px-6 py-4">
+                          <div>
+                            <div className="font-medium text-slate-900">{dept.name}</div>
+                            {dept.description && (
+                              <div className="text-xs text-slate-500 mt-0.5">{dept.description}</div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <button
+                            onClick={() => handleMembersClick(dept)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors cursor-pointer"
+                          >
+                            <Users size={12} />
+                            {memberCount} member{memberCount !== 1 ? 's' : ''}
+                          </button>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            {previewMembers.map((member) => (
+                              <div
+                                key={member.id}
+                                className={`size-6 rounded-full flex items-center justify-center text-xs font-semibold ${roleColorMap[member.systemRole?.color?.toLowerCase() || 'gray'] || 'bg-gray-100 text-gray-600'}`}
+                                title={`${member.firstName} ${member.lastName}`}
+                              >
+                                {getInitials(member.firstName, member.lastName)}
+                              </div>
+                            ))}
+                            {remainingCount > 0 && (
+                              <span className="text-xs text-slate-500 font-medium">+{remainingCount} more</span>
+                            )}
+                            {memberCount === 0 && (
+                              <span className="text-xs text-slate-400">No members</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-sm text-slate-600">
+                          {formatDate(dept.createdAt)}
+                        </td>
+                        {showDepartmentAiAlertColumn ? (
+                          <td className="px-6 py-4">
+                            <WorkspaceAlertTableCell alerts={workspaceAlertsByEntityId?.[dept.id]} />
+                          </td>
+                        ) : null}
+                        <td className="px-6 py-4">
+                          <div className="flex items-center justify-end gap-2">
+                            {SHOW_TABLE_ROW_EDIT_ICON ? (
+                              <button
+                                onClick={() => {
+                                  setSelectedDepartment(dept);
+                                  setShowAddDrawer(true);
+                                }}
+                                className="p-2 hover:bg-slate-100 rounded-lg transition-colors text-slate-600 hover:text-slate-900"
+                                title="Edit"
+                              >
+                                <Edit size={16} />
+                              </button>
+                            ) : null}
+                            {deleteConfirm === dept.id ? (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-slate-600">Delete {dept.name}?</span>
+                                <button
+                                  onClick={() => handleDelete(dept)}
+                                  className="px-3 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  onClick={() => setDeleteConfirm(null)}
+                                  className="px-3 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => handleDelete(dept)}
+                                className="p-2 hover:bg-slate-100 rounded-lg transition-colors text-slate-600 hover:text-red-600"
+                                title="Delete"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className={PH2_TABLE_CARD_FOOTER_CLASS}>
+              <PaginationAll
+                initialPage={currentPage}
+                totalPages={Math.max(1, Math.ceil(totalDepartments / pageSize))}
+                totalCount={totalDepartments}
+                pageSize={pageSize}
+                pageSizeOptions={[...TABLE_PAGE_SIZE_OPTIONS]}
+                onPageSizeChange={(n) => {
+                  if (!(TABLE_PAGE_SIZE_OPTIONS as readonly number[]).includes(n)) return;
+                  setPageSize(n as TablePageSize);
+                  setCurrentPage(1);
+                }}
+                itemLabel="departments"
+                onPageChange={setCurrentPage}
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Drawers */}
+      <AddDepartmentDrawer
+        isOpen={showAddDrawer}
+        department={selectedDepartment}
+        onClose={() => {
+          setShowAddDrawer(false);
+          setSelectedDepartment(null);
+        }}
+        onSuccess={(savedDepartment) => {
+          setShowAddDrawer(false);
+          setSelectedDepartment(null);
+          if (savedDepartment) {
+            upsertDepartmentLocal(savedDepartment as DepartmentWithMembers);
+          }
+          fetchData();
+        }}
+      />
+
+      {selectedDepartment && (
+        <>
+          <DepartmentMembersDrawer
+            isOpen={showMembersDrawer}
+            department={selectedDepartment}
+            onClose={() => {
+              setShowMembersDrawer(false);
+              setSelectedDepartment(null);
+            }}
+            onMemberMove={() => {
+              fetchData();
+            }}
+          />
+        </>
+      )}
+    </div>
+  );
+};

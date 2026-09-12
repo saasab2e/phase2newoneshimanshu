@@ -1,0 +1,510 @@
+'use client';
+
+import React, { useEffect, useMemo, useState } from 'react';
+import type { Permission, RoleCompanyAccess } from '../../types/team';
+import { emptyRoleCompanyAccess } from '../../types/team';
+import { isOrgModuleEnabled } from '../../lib/api';
+import { getRoleOrgCompanies, type RoleOrgCompany } from '../../lib/api/teamApi';
+import {
+  applyDashboardLevelToSelectedIds,
+  dashboardLevelFromSelectedIds,
+  findPermissionIdsByNames,
+  DASHBOARD_LEVEL_PERMISSIONS,
+  DASHBOARD_PEOPLE_FOLLOW_TEAM,
+  formatPermissionLabel,
+  formatPermissionDescription,
+  formatModuleLabel,
+  isDashboardHiddenTickPermission,
+  RBAC_MODULE_GROUPS,
+  sortModules,
+  type RoleDashboardLevelChoice,
+} from './permissionCatalog';
+
+type PermissionPickerProps = {
+  permissionsByModule: Record<string, Permission[]>;
+  selectedIds: Set<string>;
+  onToggle: (permissionId: string) => void;
+  onModuleSelectAll: (module: string) => void;
+  /** When set, Dashboard level dropdown replaces the selected set. */
+  onSelectionChange?: (next: Set<string>) => void;
+  disabled?: boolean;
+  maxHeightClass?: string;
+  /** Optional module order (HQ Team uses sidebar-aligned order). */
+  moduleOrder?: string[];
+  companyAccess?: RoleCompanyAccess;
+  onCompanyAccessChange?: (next: RoleCompanyAccess) => void;
+};
+
+export function PermissionPicker({
+  permissionsByModule,
+  selectedIds,
+  onToggle,
+  onModuleSelectAll,
+  onSelectionChange,
+  disabled = false,
+  maxHeightClass = 'max-h-[420px]',
+  moduleOrder,
+  companyAccess,
+  onCompanyAccessChange,
+}: PermissionPickerProps) {
+  const modules = moduleOrder?.length
+    ? [...Object.keys(permissionsByModule)].sort((a, b) => {
+        const aIndex = moduleOrder.indexOf(a);
+        const bIndex = moduleOrder.indexOf(b);
+        if (aIndex === -1 && bIndex === -1) return a.localeCompare(b);
+        if (aIndex === -1) return 1;
+        if (bIndex === -1) return -1;
+        return aIndex - bIndex;
+      })
+    : sortModules(Object.keys(permissionsByModule));
+
+  const levelIdByName = useMemo(
+    () => findPermissionIdsByNames(permissionsByModule, DASHBOARD_LEVEL_PERMISSIONS),
+    [permissionsByModule],
+  );
+
+  const dashboardLevel = dashboardLevelFromSelectedIds(selectedIds, levelIdByName);
+
+  const filteredByModule = useMemo(() => {
+    const out: Record<string, Permission[]> = {};
+    for (const [module, list] of Object.entries(permissionsByModule)) {
+      out[module] = (list || []).filter((p) => !isDashboardHiddenTickPermission(p.permissionName));
+    }
+    return out;
+  }, [permissionsByModule]);
+
+  /**
+   * Modules split into catalog sections (CRM, Recruitment, …) so the tick list
+   * reads in business sequence. A caller-supplied moduleOrder (HQ Team) opts out
+   * of sectioning and keeps its own flat order.
+   */
+  const sections = useMemo(() => {
+    const withPermissions = modules.filter((module) => (filteredByModule[module] || []).length > 0);
+    if (moduleOrder?.length) {
+      return [{ group: null as string | null, description: null, modules: withPermissions }];
+    }
+
+    const remaining = new Set(withPermissions);
+    const out: { group: string | null; description: string | null; modules: string[] }[] = [];
+
+    for (const entry of RBAC_MODULE_GROUPS) {
+      const groupModules = entry.modules.filter((module) => remaining.has(module));
+      groupModules.forEach((module) => remaining.delete(module));
+      if (groupModules.length) {
+        out.push({ group: entry.group, description: entry.description, modules: groupModules });
+      }
+    }
+
+    const leftovers = withPermissions.filter((module) => remaining.has(module));
+    if (leftovers.length) {
+      out.push({ group: 'Other', description: null, modules: leftovers });
+    }
+    return out;
+  }, [filteredByModule, moduleOrder, modules]);
+
+  const syncPeopleWithTeam = (next: Set<string>) => {
+    const nameToId = findPermissionIdsByNames(permissionsByModule, [
+      ...Object.keys(DASHBOARD_PEOPLE_FOLLOW_TEAM),
+      ...Object.values(DASHBOARD_PEOPLE_FOLLOW_TEAM),
+    ]);
+    for (const [teamName, peopleName] of Object.entries(DASHBOARD_PEOPLE_FOLLOW_TEAM)) {
+      const teamId = nameToId[teamName] || teamName;
+      const peopleId = nameToId[peopleName] || peopleName;
+      if (next.has(teamId) || next.has(teamName)) next.add(peopleId);
+      else {
+        next.delete(peopleId);
+        next.delete(peopleName);
+      }
+    }
+    return next;
+  };
+
+  const switchPermission = useMemo(() => {
+    for (const list of Object.values(permissionsByModule)) {
+      const found = (list || []).find((p) => p.permissionName === 'switch_companies');
+      if (found) return found;
+    }
+    return null;
+  }, [permissionsByModule]);
+
+  const switchSelected = Boolean(switchPermission && selectedIds.has(switchPermission.id));
+
+  const commitSelection = (next: Set<string>) => {
+    const synced = syncPeopleWithTeam(next);
+    if (onSelectionChange) onSelectionChange(synced);
+    if (switchPermission && !synced.has(switchPermission.id)) {
+      onCompanyAccessChange?.(emptyRoleCompanyAccess());
+    }
+  };
+
+  const handleToggle = (permissionId: string) => {
+    if (disabled) return;
+    if (!onSelectionChange) {
+      onToggle(permissionId);
+      if (switchPermission && permissionId === switchPermission.id && selectedIds.has(permissionId)) {
+        onCompanyAccessChange?.(emptyRoleCompanyAccess());
+      }
+      return;
+    }
+    const next = new Set(selectedIds);
+    if (next.has(permissionId)) next.delete(permissionId);
+    else next.add(permissionId);
+    commitSelection(next);
+  };
+
+  const handleModuleSelectAll = (module: string) => {
+    if (disabled) return;
+    if (!onSelectionChange) {
+      onModuleSelectAll(module);
+      return;
+    }
+    const modulePermissions = filteredByModule[module] || [];
+    const allSelected =
+      modulePermissions.length > 0 &&
+      modulePermissions.every((p) => selectedIds.has(p.id));
+    const next = new Set(selectedIds);
+    modulePermissions.forEach((p) => {
+      if (allSelected) next.delete(p.id);
+      else next.add(p.id);
+    });
+    commitSelection(next);
+  };
+
+  const handleGroupSelectAll = (groupModules: string[]) => {
+    if (disabled || !onSelectionChange) return;
+    const groupPermissions = groupModules.flatMap((module) => filteredByModule[module] || []);
+    if (!groupPermissions.length) return;
+    const allSelected = groupPermissions.every((p) => selectedIds.has(p.id));
+    const next = new Set(selectedIds);
+    groupPermissions.forEach((p) => {
+      if (allSelected) next.delete(p.id);
+      else next.add(p.id);
+    });
+    commitSelection(next);
+  };
+
+  const setDashboardLevel = (level: RoleDashboardLevelChoice) => {
+    if (disabled) return;
+    const next = applyDashboardLevelToSelectedIds(selectedIds, level, levelIdByName);
+    if (onSelectionChange) {
+      onSelectionChange(syncPeopleWithTeam(next));
+      return;
+    }
+    const before = dashboardLevelFromSelectedIds(selectedIds, levelIdByName);
+    if (before === level) return;
+    const prevId =
+      before === 'tenant'
+        ? levelIdByName.dash_full_scope
+        : before === 'company'
+          ? levelIdByName.dash_company_scope
+          : before === 'department'
+            ? levelIdByName.dash_dept_scope
+            : null;
+    const nextId =
+      level === 'tenant'
+        ? levelIdByName.dash_full_scope
+        : level === 'company'
+          ? levelIdByName.dash_company_scope
+          : level === 'department'
+            ? levelIdByName.dash_dept_scope
+            : null;
+    if (prevId) onToggle(prevId);
+    if (nextId) onToggle(nextId);
+  };
+
+  if (!modules.length) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-6 text-center">
+        <p className="text-sm font-semibold text-slate-800">Loading permissions…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`space-y-4 overflow-y-auto ${maxHeightClass}`}>
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-2">
+        <h4 className="text-sm font-semibold text-slate-900">Dashboard level</h4>
+        <select
+          value={dashboardLevel}
+          onChange={(e) => setDashboardLevel(e.target.value as RoleDashboardLevelChoice)}
+          disabled={disabled}
+          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <option value="self">My work — assigned records only</option>
+          <option value="department">My department — everyone in the department</option>
+          <option value="company">This company — company / branch records</option>
+          <option value="tenant">Whole tenant — all companies</option>
+        </select>
+      </div>
+
+      {sections.map((section) => (
+        <div key={section.group || 'all'} className="space-y-3">
+          {section.group ? (
+            <div className="flex items-end justify-between gap-2 border-b border-slate-200 pb-1">
+              <div className="min-w-0">
+                <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  {section.group}
+                </h3>
+                {section.description ? (
+                  <p className="text-[10px] text-slate-400">{section.description}</p>
+                ) : null}
+              </div>
+              {!disabled && onSelectionChange ? (
+                <button
+                  type="button"
+                  onClick={() => handleGroupSelectAll(section.modules)}
+                  className="shrink-0 text-[11px] font-semibold text-blue-600 hover:text-blue-700"
+                >
+                  {section.modules
+                    .flatMap((module) => filteredByModule[module] || [])
+                    .every((p) => selectedIds.has(p.id))
+                    ? `Deselect ${section.group}`
+                    : `Select all ${section.group}`}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
+          {section.modules.map((module) => {
+            const modulePermissions = filteredByModule[module] || [];
+            if (!modulePermissions.length) return null;
+            const allSelected = modulePermissions.every((p) => selectedIds.has(p.id));
+
+            return (
+              <div key={module} className="rounded-lg border border-slate-200 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-900">{formatModuleLabel(module)}</h4>
+                    <p className="text-[10px] text-slate-400">
+                      {modulePermissions.filter((p) => selectedIds.has(p.id)).length} /{' '}
+                      {modulePermissions.length} selected
+                    </p>
+                  </div>
+                  {!disabled ? (
+                    <button
+                      type="button"
+                      onClick={() => handleModuleSelectAll(module)}
+                      className="text-xs font-medium text-blue-600 hover:text-blue-700 shrink-0"
+                    >
+                      {allSelected ? 'Deselect all' : 'Select all'}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="grid grid-cols-1 gap-1">
+                  {modulePermissions.map((permission) => {
+                    const description = formatPermissionDescription(
+                      permission.permissionName,
+                      permission.description,
+                    );
+                    return (
+                    <div key={permission.id} className="space-y-1">
+                    <label
+                      className={`flex items-start gap-2 rounded-lg p-2 transition-colors ${
+                        disabled
+                          ? 'cursor-not-allowed opacity-60'
+                          : 'cursor-pointer hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(permission.id)}
+                        onChange={() => handleToggle(permission.id)}
+                        disabled={disabled}
+                        className="mt-0.5 size-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-sm font-medium text-slate-800">
+                          {formatPermissionLabel(permission.permissionName)}
+                        </span>
+                        {description ? (
+                          <span className="block text-[11px] text-slate-500">{description}</span>
+                        ) : null}
+                      </span>
+                    </label>
+                    {permission.permissionName === 'switch_companies' &&
+                    switchSelected &&
+                    onCompanyAccessChange ? (
+                      <SwitchCompanyAccessPanel
+                        disabled={disabled}
+                        value={companyAccess || emptyRoleCompanyAccess()}
+                        onChange={onCompanyAccessChange}
+                      />
+                    ) : null}
+                    </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function crmModulesEnabled() {
+  return (
+    isOrgModuleEnabled('leads') ||
+    isOrgModuleEnabled('clients') ||
+    isOrgModuleEnabled('contacts') ||
+    isOrgModuleEnabled('crm_dashboard')
+  );
+}
+
+function recruitmentModulesEnabled() {
+  return (
+    isOrgModuleEnabled('jobs') ||
+    isOrgModuleEnabled('candidates') ||
+    isOrgModuleEnabled('interviews') ||
+    isOrgModuleEnabled('placements') ||
+    isOrgModuleEnabled('pipeline') ||
+    isOrgModuleEnabled('matches') ||
+    isOrgModuleEnabled('clients')
+  );
+}
+
+export function selectedSetHasSwitchCompanies(
+  selectedIds: Set<string>,
+  permissionsByModule: Record<string, Permission[]>,
+) {
+  for (const list of Object.values(permissionsByModule || {})) {
+    const found = (list || []).find((p) => p.permissionName === 'switch_companies');
+    if (found && selectedIds.has(found.id)) return true;
+  }
+  return false;
+}
+
+export function companyAccessHasPicks(value?: RoleCompanyAccess | null) {
+  return Boolean((value?.crm || []).length || (value?.recruitment || []).length);
+}
+
+function SwitchCompanyAccessPanel({
+  disabled,
+  value,
+  onChange,
+}: {
+  disabled?: boolean;
+  value: RoleCompanyAccess;
+  onChange?: (next: RoleCompanyAccess) => void;
+}) {
+  const [companies, setCompanies] = useState<RoleOrgCompany[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [openSide, setOpenSide] = useState<'crm' | 'recruitment' | null>(null);
+  const showCrm = crmModulesEnabled();
+  const showRecruitment = recruitmentModulesEnabled();
+
+  useEffect(() => {
+    let cancelled = false;
+    void getRoleOrgCompanies()
+      .then((rows) => {
+        if (!cancelled) {
+          setCompanies(rows);
+          setLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCompanies([]);
+          setLoaded(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleCompany = (side: 'crm' | 'recruitment', id: string) => {
+    if (disabled || !onChange) return;
+    const current = new Set(value[side] || []);
+    if (current.has(id)) current.delete(id);
+    else current.add(id);
+    onChange({ ...value, [side]: [...current] });
+  };
+
+  const setAll = (side: 'crm' | 'recruitment', selected: boolean) => {
+    if (disabled || !onChange) return;
+    onChange({
+      ...value,
+      [side]: selected ? companies.map((c) => c.id) : [],
+    });
+  };
+
+  const sides: Array<{ key: 'crm' | 'recruitment'; label: string; show: boolean }> = [
+    { key: 'crm', label: 'CRM', show: showCrm },
+    { key: 'recruitment', label: 'Recruitment', show: showRecruitment },
+  ].filter((s) => s.show);
+
+  if (!sides.length) return null;
+
+  return (
+    <div className="ml-6 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+      <p className="text-[11px] text-slate-500">
+        Open CRM or Recruitment, then tick the organizations this role can switch into. That
+        grants full access of those companies — no separate “full access” tick.
+      </p>
+      {sides.map((side) => {
+        const selected = new Set(value[side.key] || []);
+        const open = openSide === side.key;
+        return (
+          <div key={side.key} className="rounded-md border border-slate-200 bg-white">
+            <button
+              type="button"
+              onClick={() => setOpenSide(open ? null : side.key)}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+            >
+              <span className="text-sm font-semibold text-slate-800">{side.label}</span>
+              <span className="text-[11px] text-slate-500">
+                {loaded
+                  ? `${selected.size} / ${companies.length} organizations`
+                  : 'Loading…'}
+              </span>
+            </button>
+            {open ? (
+              <div className="border-t border-slate-100 px-3 py-2 space-y-2">
+                {!loaded ? (
+                  <p className="text-[11px] text-slate-500">Loading organizations…</p>
+                ) : companies.length === 0 ? (
+                  <p className="text-[11px] text-slate-500">
+                    No organizations yet. Add companies in Organization, then pick them here.
+                  </p>
+                ) : (
+                  <>
+                    {!disabled && onChange ? (
+                      <button
+                        type="button"
+                        onClick={() => setAll(side.key, selected.size < companies.length)}
+                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-700"
+                      >
+                        {selected.size === companies.length ? 'Clear all' : 'Select all'}
+                      </button>
+                    ) : null}
+                    <div className="grid grid-cols-1 gap-1">
+                      {companies.map((company) => (
+                        <label
+                          key={company.id}
+                          className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-sm ${
+                            disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-slate-50'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected.has(company.id)}
+                            onChange={() => toggleCompany(side.key, company.id)}
+                            disabled={disabled}
+                            className="size-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-slate-800">{company.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

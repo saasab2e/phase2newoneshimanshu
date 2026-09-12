@@ -1,0 +1,78 @@
+'use client';
+
+import React from 'react';
+
+/** Shared `<select>` styling — Leads / Client toolbar (indigo). */
+export const PH2_TOOLBAR_SELECT_CLASS =
+  'h-9 min-h-9 rounded-lg border border-indigo-100/90 bg-white/95 px-2.5 py-1.5 text-xs font-medium text-slate-800 shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-300 cursor-pointer hover:border-indigo-200/90 hover:bg-indigo-50/40';
+
+/** Frosted table / panel wrapper — viewport-locked list card (fills remaining height). */
+export const PH2_TABLE_CARD_CLASS =
+  'mb-0 flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col overflow-hidden rounded-xl border border-indigo-100/60 bg-white shadow-[0_12px_40px_-18px_rgba(59,130,246,0.18)] transition-shadow hover:shadow-[0_16px_48px_-14px_rgba(79,70,229,0.16)]';
+
+/** Top row inside table card (search + filters). */
+export const PH2_TOOLBAR_ROW_CLASS =
+  'shrink-0 p-2.5 sm:p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-2 sm:gap-3 border-b border-indigo-100/40 bg-gradient-to-br from-white via-indigo-50/25 to-violet-50/20';
+
+export const PH2_TABLE_CARD_FOOTER_CLASS =
+  'mt-0 w-full min-w-0 shrink-0 border-t border-indigo-100/50 bg-gradient-to-r from-slate-50/40 via-white to-indigo-50/25 px-2.5 py-2 sm:px-4';
+
+/** KPI / status tiles — stay in one row and shrink on small screens. */
+export const PH2_KPI_ROW_CLASS =
+  'mb-2 sm:mb-4 grid shrink-0 grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-1 sm:gap-2 lg:gap-3';
+
+/** Scroll region for table rows inside a PH2 table card. */
+export const PH2_TABLE_BODY_SCROLL_CLASS =
+  'ph2-table-body-scroll min-h-0 min-w-0 max-w-full flex-1 overflow-x-auto overflow-y-auto';
+
+/** Wide list tables keep column width and scroll horizontally on small screens. */
+export const PH2_TABLE_CLASS = 'w-max min-w-full border-collapse text-left';
+
+/** Icon + page title row in module headers (vertically centered). */
+export const PH2_PAGE_HEADER_BRAND_CLASS = 'flex min-w-0 items-center gap-2 sm:gap-3';
+
+export const PH2_PAGE_HEADER_ICON_TILE_CLASS =
+  'flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-600 text-white shadow-lg shadow-indigo-500/30 ring-1 ring-white/20';
+
+export const PH2_PAGE_HEADER_TITLE_CLASS =
+  'text-lg sm:text-xl lg:text-[1.35rem] font-bold tracking-tight text-slate-900 leading-none';
+
+type Ph2ModulePageLayoutProps = {
+  title: string;
+  /** Icon inside the gradient tile (already sized, e.g. `<Briefcase className="h-5 w-5" />`). */
+  icon: React.ReactNode;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+  /** Portals/drawers that should live inside `<main>` after the scroll region. */
+  belowScroll?: React.ReactNode;
+};
+
+/**
+ * Shared shell for CRM modules: viewport-locked column, indigo header,
+ * content area that does not page-scroll (tables scroll inside their card).
+ */
+export function Ph2ModulePageLayout({
+  title,
+  icon,
+  actions,
+  children,
+  belowScroll,
+}: Ph2ModulePageLayoutProps) {
+  return (
+    <div className="ph2-page-shell flex h-[calc(100dvh-3.5rem)] w-full min-w-0 max-w-full flex-col overflow-hidden text-slate-900">
+      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex min-h-0 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-indigo-100/50 bg-white/80 px-3 py-2.5 shadow-[inset_0_-1px_0_0_rgba(99,102,241,0.08)] backdrop-blur-md sm:min-h-[4.5rem] sm:gap-3 sm:px-6 sm:py-3">
+          <div className={PH2_PAGE_HEADER_BRAND_CLASS}>
+            <div className={PH2_PAGE_HEADER_ICON_TILE_CLASS}>{icon}</div>
+            <h1 className={PH2_PAGE_HEADER_TITLE_CLASS}>{title}</h1>
+          </div>
+          {actions ? <div className="flex min-w-0 flex-wrap items-center gap-2">{actions}</div> : null}
+        </header>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-2 py-2 sm:px-5 sm:py-4 lg:px-6">
+          {children}
+        </div>
+        {belowScroll}
+      </main>
+    </div>
+  );
+}

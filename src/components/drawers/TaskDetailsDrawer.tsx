@@ -1,0 +1,2137 @@
+'use client';
+
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { usePageDrawerLifecycle } from '../../lib/pageDrawerEvents';
+import { confirmDiscardUnsavedChanges, useDrawerUnsavedGuard } from '../../hooks/useDrawerUnsavedGuard';
+import { motion, AnimatePresence } from 'motion/react';
+import { DetailsModalShell } from './DetailsModalShell';
+import { DrawerTabBar } from './DrawerTabBar';
+import {
+  X,
+  Pencil,
+  LayoutGrid,
+  Activity,
+  CheckSquare,
+  Calendar,
+  Users2,
+  Phone,
+  Mail,
+  FileText,
+  Clock,
+  MoreVertical,
+  MessageSquare,
+  Paperclip,
+  Trash2,
+  ExternalLink,
+  Plus,
+  AlertCircle,
+  AlertTriangle,
+  Sparkles,
+  Eye,
+  Send,
+  MessagesSquare,
+  Briefcase,
+} from 'lucide-react';
+import { formatDateDMY, formatDateTimeDMY } from '../../utils/dateDisplay';
+import { TaskSLAAlertBadge, TaskSLAAlertsPanel, getDaysOverdue } from '../TaskSLAAlerts';
+import { ImageWithFallback } from '../ImageWithFallback';
+import { TaskForm } from '../TaskForm';
+import { TaskActivityLog } from '../TaskActivityLog';
+import { EntityAuditSummary } from '../table/TableAuditCell';
+import { DrawerEntityChatTab } from './DrawerEntityChatTab';
+import { EntityWorkspaceAlertsPanel } from '../ai/EntityWorkspaceAlertsPanel';
+import type { AuditMeta } from '../../types/audit';
+import { TaskCommunicationHistory } from '../TaskCommunicationHistory';
+import { CandidateInteractionLogs } from '../CandidateInteractionLogs';
+import { AITaskSuggestionsPanel } from '../AITaskSuggestionsPanel';
+import {
+  type TaskRelatedTo,
+  type TaskPriority,
+  type RelatedEntity,
+  type TaskFormValues,
+  type TaskEditStatus,
+  type AITaskSuggestion,
+  MOCK_ASSIGNEES,
+  MOCK_CANDIDATES,
+  MOCK_JOBS,
+  MOCK_CLIENTS,
+  MOCK_INTERVIEWS,
+} from '../../app/Task&Activites/types';
+import { apiGetTaskFiles, apiDelegateTask, apiGetTaskAssignableMembers, type TaskFile } from '../../lib/api';
+import { getActiveOrgUnitId } from '../../lib/org/orgWorkspaceStorage';
+import { cloudinaryPdfViewerHref, normalizeCloudinaryDocumentUrl } from '../../utils/cloudinaryUrls';
+import { CreateJobDrawer } from './CreateJobDrawer';
+import { getTeamRequest } from '../../lib/api/teamApi';
+import { orEmpty, startAsyncLoad } from '../../lib/asyncLoadGuard';
+import { usePermissions } from '../../hooks/usePermissions';
+import type { TeamRequest, TeamRequestJobPrefill } from '../../types/team';
+
+function cloudinaryViewableUrl(u: string) {
+  return cloudinaryPdfViewerHref(normalizeCloudinaryDocumentUrl(u));
+}
+
+export type TaskType = 'Call' | 'Email' | 'Interview' | 'Follow-up' | 'Meeting' | 'Note';
+export type TaskStatus = 'Pending' | 'In Progress' | 'Awaiting Approval' | 'Completed' | 'Cancelled' | 'Overdue';
+
+export interface TaskAttachment {
+  name: string;
+  url?: string;
+}
+
+export interface TaskForDrawer {
+  id: string;
+  title: string;
+  type: TaskType;
+  relatedTo: { id: string; name: string; type: TaskRelatedTo };
+  dueDate: string;
+  time: string;
+  dueTime?: string;
+  priority: TaskPriority;
+  status: TaskStatus;
+  owner: { name: string; avatar: string };
+  assignedToId?: string;
+  createdById?: string;
+  participantIds?: string[];
+  completionApproverId?: string;
+  completionRequestedById?: string;
+  workflowStatus?: TaskStatus;
+  backendStatus?: 'PENDING' | 'TODO' | 'IN_PROGRESS' | 'AWAITING_APPROVAL' | 'DONE' | 'CANCELLED';
+  description?: string;
+  reminder?: string;
+  lastUpdated?: { by: string; at: string };
+  createdBy?: { name: string; at: string };
+  notes?: string[];
+  attachments?: TaskAttachment[];
+  auditMeta?: AuditMeta | null;
+}
+
+export interface TaskActivityItem {
+  id: string;
+  type: TaskType;
+  note: string;
+  timestamp: string;
+  recruiter: string;
+}
+
+export interface TaskDetailsDrawerProps {
+  isOpen: boolean;
+  onClose: () => void;
+  mode: 'create' | 'detail' | 'edit';
+  task: TaskForDrawer | null;
+  /** Legacy note-style activities (optional) */
+  activities?: TaskActivityItem[];
+  /** Audit-style activity log events for Activity tab */
+  activityEvents?: import('../../app/Task&Activites/types').TaskActivityEvent[];
+  /** Communication history for Communication tab */
+  communicationEntries?: import('../../app/Task&Activites/types').TaskCommunicationEntry[];
+  /** Candidate interaction logs for Communication tab (when task is related to Candidate) */
+  candidateInteractionEntries?: import('../../app/Task&Activites/types').CandidateInteractionEntry[];
+  /** When opening in create mode, optional prefill for the form (e.g. from AI suggestion) */
+  createTaskPrefill?: Partial<TaskFormValues> | null;
+  /** AI task suggestions shown in the Suggestions tab (detail mode) */
+  aiSuggestions?: AITaskSuggestion[];
+  /** Called when user clicks Create Task on a suggestion — parent should set prefill and switch to create mode */
+  onCreateTaskFromSuggestion?: (suggestion: AITaskSuggestion) => void;
+  onCreateSuccess?: (createdTaskId?: string) => void;
+  onUpdateSuccess?: () => void;
+  /** Called when user clicks Edit from task detail view — parent should set mode to 'edit' */
+  onRequestEdit?: () => void;
+  /** Called when exiting edit (Cancel or after Save) — parent should set mode to 'detail' */
+  onExitEdit?: () => void;
+  /** Called when Mark Completed / Submit for approval is clicked */
+  onMarkCompleted?: (taskId: string) => void;
+  /** Called when approver accepts completion */
+  onApproveCompletion?: (taskId: string) => void;
+  /** Called when approver rejects completion */
+  onRejectCompletion?: (taskId: string, note?: string) => void;
+  /** Logged-in user id for approval actions */
+  currentUserId?: string;
+  /** Called when Delete Task is clicked */
+  onDelete?: (taskId: string) => void;
+  /** Called when related entity card is clicked (e.g. navigate to candidate profile) */
+  onRelatedEntityClick?: (entity: { id: string; name: string; type: TaskRelatedTo }) => void;
+  /** Optional loading state when fetching task by id */
+  isLoading?: boolean;
+}
+
+const TaskTypeIcon = ({ type }: { type: TaskType }) => {
+  const icons = { Call: Phone, Email: Mail, Interview: Users2, 'Follow-up': Clock, Meeting: Calendar, Note: FileText };
+  const Icon = icons[type];
+  return <Icon size={16} className="text-slate-500" />;
+};
+
+const PRIORITY_STYLES: Record<TaskPriority, string> = {
+  High: 'bg-red-50 text-red-700 border-red-200',
+  Medium: 'bg-amber-50 text-amber-700 border-amber-200',
+  Low: 'bg-slate-100 text-slate-700 border-slate-200',
+};
+
+const STATUS_STYLES: Record<TaskStatus, string> = {
+  Pending: 'bg-slate-100 text-slate-700',
+  'In Progress': 'bg-blue-100 text-blue-700',
+  'Awaiting Approval': 'bg-amber-100 text-amber-800',
+  Completed: 'bg-emerald-100 text-emerald-700',
+  Cancelled: 'bg-slate-200 text-slate-500',
+  Overdue: 'bg-red-100 text-red-700',
+};
+
+function taskRequiresApprovalSubmit(task: TaskForDrawer, currentUserId?: string): boolean {
+  if (!currentUserId || task.assignedToId !== currentUserId) return false;
+  if (
+    task.backendStatus === 'DONE' ||
+    task.backendStatus === 'AWAITING_APPROVAL' ||
+    task.backendStatus === 'CANCELLED'
+  ) {
+    return false;
+  }
+  if (task.completionApproverId && task.completionApproverId !== currentUserId) {
+    return true;
+  }
+  const participants = task.participantIds || [];
+  const delegators = participants.filter(
+    (id) => id !== currentUserId && id !== task.createdById,
+  );
+  return delegators.length > 0;
+}
+
+function canApproveTaskCompletion(task: TaskForDrawer, currentUserId?: string): boolean {
+  if (!currentUserId || task.backendStatus !== 'AWAITING_APPROVAL') return false;
+  return task.completionApproverId === currentUserId;
+}
+
+function getEntitiesForRelatedTo(relatedTo: TaskRelatedTo): RelatedEntity[] {
+  switch (relatedTo) {
+    case 'Candidate': return MOCK_CANDIDATES;
+    case 'Job': return MOCK_JOBS;
+    case 'Client': return MOCK_CLIENTS;
+    case 'Interview': return MOCK_INTERVIEWS;
+    default: return [];
+  }
+}
+
+/** Map drawer task to form values for edit mode */
+function taskToFormValues(t: TaskForDrawer): TaskFormValues {
+  // Use assignedToId directly from task if available, otherwise try to find by name
+  const assigneeId = t.assignedToId || MOCK_ASSIGNEES.find((u) => u.name === t.owner.name)?.id || '';
+  const normalizeTimeForInput = (value?: string) => {
+    if (!value) return '';
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    if (/^\d{2}:\d{2}$/.test(trimmed)) return trimmed;
+
+    const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*([AP]M)$/i);
+    if (!match) return '';
+
+    let hours = Number(match[1]);
+    const minutes = match[2];
+    const period = match[3].toUpperCase();
+
+    if (period === 'AM') {
+      hours = hours === 12 ? 0 : hours;
+    } else if (hours !== 12) {
+      hours += 12;
+    }
+
+    return `${String(hours).padStart(2, '0')}:${minutes}`;
+  };
+  
+  // Map backend status to edit form status
+  // Backend: 'PENDING' | 'TODO' | 'IN_PROGRESS' | 'DONE' | 'CANCELLED'
+  // Edit form: 'Pending' | 'In Progress' | 'Completed' | 'Cancelled'
+  const backendStatusMap: Record<string, TaskEditStatus> = {
+    'PENDING': 'Pending',
+    'TODO': 'Pending',
+    'IN_PROGRESS': 'In Progress',
+    'AWAITING_APPROVAL': 'In Progress',
+    'DONE': 'Completed',
+    'CANCELLED': 'Cancelled',
+  };
+  
+  // Use backend status if available, otherwise map from TaskStatus
+  let editStatus: TaskEditStatus = 'Pending';
+  if (t.backendStatus) {
+    editStatus = backendStatusMap[t.backendStatus] || 'Pending';
+  } else {
+    // Fallback: map from TaskStatus (for backward compatibility)
+    const statusMap: Record<TaskStatus, TaskEditStatus> = {
+      'Pending': 'Pending',
+      'In Progress': 'In Progress',
+      'Awaiting Approval': 'In Progress',
+      'Completed': 'Completed',
+      'Cancelled': 'Cancelled',
+      'Overdue': 'Pending',
+    };
+    editStatus = statusMap[t.status] || 'Pending';
+  }
+  
+  return {
+    title: t.title,
+    description: t.description ?? '',
+    relatedTo: t.relatedTo.type,
+    relatedEntityId: t.relatedTo.id,
+    assigneeId,
+    priority: t.priority,
+    dueDate: t.dueDate,
+    dueTime: normalizeTimeForInput(t.dueTime ?? t.time),
+    reminder: t.reminder ?? '',
+    attachmentNames: Array.isArray(t.attachments) && t.attachments.length > 0
+      ? t.attachments.map((attachment) => attachment.name).filter(Boolean).join(', ')
+      : '',
+    notifyAssignee: true,
+    status: editStatus,
+  };
+}
+
+  const CREATE_FORM_INITIAL: TaskFormValues = {
+  title: '',
+  description: '',
+  relatedTo: '',
+  relatedEntityId: '',
+  assigneeId: '',
+  priority: '',
+  dueDate: '',
+  dueTime: '',
+  reminder: '',
+  attachmentNames: '',
+  notifyAssignee: true,
+  crossDepartmentRequest: false,
+  targetDepartmentId: '',
+  targetMemberId: '',
+};
+
+export function TaskDetailsDrawer({
+  isOpen,
+  onClose,
+  mode,
+  task,
+  activities: activitiesProp,
+  activityEvents: activityEventsProp,
+  communicationEntries: communicationEntriesProp,
+  candidateInteractionEntries: candidateInteractionEntriesProp,
+  createTaskPrefill = null,
+  aiSuggestions: aiSuggestionsProp,
+  onCreateTaskFromSuggestion,
+  onCreateSuccess,
+  onUpdateSuccess,
+  onRequestEdit,
+  onExitEdit,
+  onMarkCompleted,
+  onApproveCompletion,
+  onRejectCompletion,
+  currentUserId,
+  onDelete,
+  onRelatedEntityClick,
+  isLoading = false,
+}: TaskDetailsDrawerProps) {
+  const activities = orEmpty(activitiesProp);
+  const activityEvents = orEmpty(activityEventsProp);
+  const communicationEntries = orEmpty(communicationEntriesProp);
+  const candidateInteractionEntries = orEmpty(candidateInteractionEntriesProp);
+  const aiSuggestions = orEmpty(aiSuggestionsProp);
+  usePageDrawerLifecycle(isOpen);
+  const { hasAnyPermission } = usePermissions();
+  const canCreateJob = hasAnyPermission(['jobs_create', 'create_job']);
+  const [activeTab, setActiveTab] = useState<'overview' | 'activity' | 'communication' | 'chat' | 'alerts' | 'suggestions'>('overview');
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [createForm, setCreateForm] = useState<TaskFormValues>(CREATE_FORM_INITIAL);
+  const [editForm, setEditForm] = useState<TaskFormValues>(CREATE_FORM_INITIAL);
+  const [isEditDirty, setIsEditDirty] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [showSuccessToast, setShowSuccessToast] = useState(false);
+  const [showErrorToast, setShowErrorToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [showAddNote, setShowAddNote] = useState(false);
+  const [newNote, setNewNote] = useState('');
+  const [isAddingNote, setIsAddingNote] = useState(false);
+  const [showAttachmentViewer, setShowAttachmentViewer] = useState(false);
+  const [selectedAttachment, setSelectedAttachment] = useState<string | null>(null);
+  const [selectedAttachmentUrl, setSelectedAttachmentUrl] = useState<string | null>(null);
+  const [imageBlobUrl, setImageBlobUrl] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [hydratedAttachments, setHydratedAttachments] = useState<TaskAttachment[]>([]);
+  const [spreadsheetPreview, setSpreadsheetPreview] = useState<{ sheetName: string; rows: string[][] } | null>(null);
+  const [spreadsheetLoading, setSpreadsheetLoading] = useState(false);
+  const [spreadsheetError, setSpreadsheetError] = useState<string | null>(null);
+  const [documentPreviewHtml, setDocumentPreviewHtml] = useState<string | null>(null);
+  const [documentPreviewLoading, setDocumentPreviewLoading] = useState(false);
+  const [documentPreviewError, setDocumentPreviewError] = useState<string | null>(null);
+  const [showRejectNote, setShowRejectNote] = useState(false);
+  const [rejectNote, setRejectNote] = useState('');
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [linkedTeamRequest, setLinkedTeamRequest] = useState<TeamRequest | null>(null);
+  const [loadingTeamRequest, setLoadingTeamRequest] = useState(false);
+  const [createJobDrawerOpen, setCreateJobDrawerOpen] = useState(false);
+  const [delegateAssigneeId, setDelegateAssigneeId] = useState('');
+  const [delegateSelfAsApprover, setDelegateSelfAsApprover] = useState(true);
+  const [delegateTargets, setDelegateTargets] = useState<Array<{ id: string; name: string }>>([]);
+  const [isDelegating, setIsDelegating] = useState(false);
+  const [canSelfApprove, setCanSelfApprove] = useState(false);
+
+  const isTeamRequestTask = task?.relatedTo.type === 'Team Request' && Boolean(task.relatedTo.id);
+  const isTaskAssignee = Boolean(
+    currentUserId && task?.assignedToId && task.assignedToId === currentUserId,
+  );
+  const showCreateJobFromRequest = Boolean(
+    isTeamRequestTask &&
+      isTaskAssignee &&
+      canCreateJob &&
+      linkedTeamRequest &&
+      !linkedTeamRequest.linkedJobId,
+  );
+  const showDelegatePanel = Boolean(
+    mode === 'detail' &&
+      task &&
+      currentUserId &&
+      task.assignedToId === currentUserId &&
+      task.backendStatus !== 'DONE' &&
+      task.backendStatus !== 'CANCELLED' &&
+      delegateTargets.length > 0,
+  );
+  const jobPrefillFromRequest: TeamRequestJobPrefill | null = linkedTeamRequest
+    ? {
+        requestId: linkedTeamRequest.id,
+        subject: linkedTeamRequest.subject,
+        description: linkedTeamRequest.description,
+        priority: linkedTeamRequest.priority,
+        requestedById: linkedTeamRequest.requestedById,
+        requestedByName: linkedTeamRequest.requestedByName,
+      }
+    : null;
+
+  useEffect(() => {
+    if (!isOpen || mode !== 'detail' || !isTeamRequestTask || !task?.relatedTo.id) {
+      setLinkedTeamRequest(null);
+      setLoadingTeamRequest(false);
+      return;
+    }
+
+    const load = startAsyncLoad(setLoadingTeamRequest);
+    void getTeamRequest(task.relatedTo.id)
+      .then((res) => {
+        if (load.isActive()) setLinkedTeamRequest(res.data);
+      })
+      .catch(() => {
+        if (load.isActive()) setLinkedTeamRequest(null);
+      })
+      .finally(() => {
+        load.finish();
+      });
+
+    return () => {
+      load.abort();
+    };
+  }, [isOpen, mode, isTeamRequestTask, task?.relatedTo.id]);
+
+  useEffect(() => {
+    if (!isOpen || mode !== 'detail' || !task || !currentUserId) {
+      setDelegateTargets([]);
+      setCanSelfApprove(false);
+      return;
+    }
+
+    let cancelled = false;
+    void apiGetTaskAssignableMembers(getActiveOrgUnitId() || undefined)
+      .then((response) => {
+        if (cancelled) return;
+        const rows = Array.isArray(response.data) ? response.data : [];
+        const targets = rows
+          .filter((member) => member.id !== currentUserId)
+          .map((member) => ({
+            id: member.id,
+            name:
+              member.name ||
+              `${member.firstName || ''} ${member.lastName || ''}`.trim() ||
+              member.email ||
+              'Team member',
+          }));
+        setDelegateTargets(targets);
+        setCanSelfApprove(targets.length > 0);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDelegateTargets([]);
+          setCanSelfApprove(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, mode, task?.id, task?.assignedToId, currentUserId]);
+
+  const handleDelegateTask = async () => {
+    if (!task || !delegateAssigneeId) {
+      setToastMessage('Select a team member to delegate to');
+      setShowErrorToast(true);
+      setTimeout(() => setShowErrorToast(false), 4000);
+      return;
+    }
+    setIsDelegating(true);
+    try {
+      await apiDelegateTask(task.id, {
+        assignToId: delegateAssigneeId,
+        setSelfAsApprover: delegateSelfAsApprover && canSelfApprove,
+      });
+      setDelegateAssigneeId('');
+      setToastMessage('Task delegated successfully');
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+      onUpdateSuccess?.();
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Failed to delegate task');
+      setShowErrorToast(true);
+      setTimeout(() => setShowErrorToast(false), 4000);
+    } finally {
+      setIsDelegating(false);
+    }
+  };
+
+  const submitLabel = task && taskRequiresApprovalSubmit(task, currentUserId)
+    ? 'Submit for approval'
+    : 'Mark Completed';
+  const showSubmitAction = task
+    && task.backendStatus !== 'DONE'
+    && task.backendStatus !== 'AWAITING_APPROVAL'
+    && task.backendStatus !== 'CANCELLED';
+  const showApprovalActions = task && canApproveTaskCompletion(task, currentUserId);
+
+  const handleRejectCompletion = async () => {
+    if (!task) return;
+    setIsRejecting(true);
+    try {
+      await onRejectCompletion?.(task.id, rejectNote.trim() || undefined);
+      setShowRejectNote(false);
+      setRejectNote('');
+    } finally {
+      setIsRejecting(false);
+    }
+  };
+
+  const editPrefillKey = useMemo(() => {
+    if (mode !== 'edit' || !task) return '';
+
+    const attachmentsKey = (task.attachments ?? [])
+      .map((attachment) => `${attachment.name}:${attachment.url ?? ''}`)
+      .join('|');
+
+    return [
+      task.id,
+      task.title,
+      task.type,
+      task.relatedTo.id,
+      task.relatedTo.name,
+      task.relatedTo.type,
+      task.dueDate,
+      task.time,
+      task.dueTime ?? '',
+      task.priority,
+      task.status,
+      task.owner.name,
+      task.assignedToId ?? '',
+      task.backendStatus ?? '',
+      task.description ?? '',
+      task.reminder ?? '',
+      task.notes?.join('|') ?? '',
+      attachmentsKey,
+    ].join('::');
+  }, [
+    mode,
+    task?.id,
+    task?.title,
+    task?.type,
+    task?.relatedTo.id,
+    task?.relatedTo.name,
+    task?.relatedTo.type,
+    task?.dueDate,
+    task?.time,
+    task?.dueTime,
+    task?.priority,
+    task?.status,
+    task?.owner.name,
+    task?.assignedToId,
+    task?.backendStatus,
+    task?.description,
+    task?.reminder,
+    task?.notes,
+    task?.attachments,
+  ]);
+
+  // When entering edit mode, prefill from task
+  useEffect(() => {
+    if (mode === 'edit' && task) {
+      setEditForm(taskToFormValues(task));
+      setIsEditDirty(false);
+    }
+  }, [editPrefillKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateAttachments = async () => {
+      if (mode !== 'edit' || !task?.id) {
+        setHydratedAttachments([]);
+        return;
+      }
+
+      if (Array.isArray(task.attachments) && task.attachments.length > 0) {
+        setHydratedAttachments(task.attachments);
+        return;
+      }
+
+      try {
+        const response = await apiGetTaskFiles(task.id);
+        const files = Array.isArray(response.data) ? (response.data as TaskFile[]) : [];
+        const mapped = files.map((file) => ({
+          name: file.fileName,
+          url: file.fileUrl,
+        }));
+
+        if (!cancelled) {
+          setHydratedAttachments(mapped);
+          setEditForm((prev) => ({
+            ...prev,
+            attachmentNames: mapped.map((file) => file.name).filter(Boolean).join(', '),
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to load task attachments:', error);
+        if (!cancelled) {
+          setHydratedAttachments([]);
+        }
+      }
+    };
+
+    void hydrateAttachments();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, task?.id, task?.attachments]);
+
+  // When opening in create mode: apply prefill from AI suggestion or reset form
+  useEffect(() => {
+    if (!isOpen || mode !== 'create') return;
+    if (createTaskPrefill && Object.keys(createTaskPrefill).length > 0) {
+      setCreateForm((prev) => ({ ...CREATE_FORM_INITIAL, ...createTaskPrefill }));
+    } else {
+      setCreateForm(CREATE_FORM_INITIAL);
+    }
+  }, [isOpen, mode, createTaskPrefill]);
+
+  // Reset note input when drawer closes
+  useEffect(() => {
+    if (!isOpen) {
+      setShowAddNote(false);
+      setNewNote('');
+      setShowAttachmentViewer(false);
+      setSelectedAttachment(null);
+      setSelectedAttachmentUrl(null);
+    }
+  }, [isOpen]);
+
+  const handleAddNote = async () => {
+    if (!task || !newNote.trim()) return;
+    
+    setIsAddingNote(true);
+    try {
+      const { apiAddTaskNote } = await import('../../lib/api');
+      await apiAddTaskNote(task.id, newNote.trim());
+      setNewNote('');
+      setShowAddNote(false);
+      
+      // Refresh task data by calling onUpdateSuccess which will refresh the task in parent
+      onUpdateSuccess?.();
+      
+      setToastMessage('Note added successfully');
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 2000);
+    } catch (error: any) {
+      console.error('Failed to add note:', error);
+      setToastMessage(error.message || 'Failed to add note');
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+    } finally {
+      setIsAddingNote(false);
+    }
+  };
+
+  const handleViewAttachment = (attachment: TaskAttachment | string) => {
+    if (typeof attachment === 'string') {
+      setSelectedAttachment(attachment);
+      setSelectedAttachmentUrl(null);
+    } else {
+      setSelectedAttachment(attachment.name);
+      setSelectedAttachmentUrl(attachment.url || null);
+    }
+    setShowAttachmentViewer(true);
+  };
+
+  const buildTaskAttachmentProxyHref = (apiPath: string, filename: string) => {
+    const params = new URLSearchParams({
+      path: apiPath,
+      filename,
+    });
+    return `/api/download-file?${params.toString()}`;
+  };
+
+  const getAttachmentUrl = (filename: string, attachmentUrl?: string | null) => {
+    if (!task) return '';
+    
+    // If attachmentUrl is provided and is a valid URL, use it
+    if (attachmentUrl && (attachmentUrl.startsWith('http://') || attachmentUrl.startsWith('https://'))) {
+      try {
+        const parsed = new URL(attachmentUrl);
+        if (isLocalUploadsUrl(attachmentUrl)) {
+          return buildTaskAttachmentProxyHref(`/api/v1/tasks/${task.id}/attachments/${filename}`, filename);
+        }
+        if (/cloudinary\.com|amazonaws\.com/i.test(parsed.host)) {
+          return cloudinaryViewableUrl(attachmentUrl);
+        }
+      } catch {
+        // fall through to proxy
+      }
+    }
+
+    // Check if the attachment in task.attachments has a URL
+    const attachment = task.attachments?.find(att => 
+      att.name === filename || att.name?.includes(filename) || filename.includes(att.name || '')
+    );
+    
+    // If attachment has a URL, use it directly
+    if (attachment?.url) {
+      if (attachment.url.startsWith('http://') || attachment.url.startsWith('https://')) {
+        try {
+          const parsed = new URL(attachment.url);
+          if (parsed.pathname.startsWith('/uploads/')) {
+            return buildTaskAttachmentProxyHref(`/api/v1/tasks/${task.id}/attachments/${filename}`, filename);
+          }
+        } catch {
+          // fall through to direct URL handling
+        }
+        return cloudinaryViewableUrl(attachment.url);
+      }
+      // If it's a relative path starting with /uploads, construct full URL without /api/v1
+      if (attachment.url.startsWith('/uploads')) {
+        return buildTaskAttachmentProxyHref(`/api/v1/tasks/${task.id}/attachments/${filename}`, filename);
+      }
+    }
+    
+    // Check if filename itself is a URL
+    if (filename.startsWith('http://') || filename.startsWith('https://')) {
+      try {
+        const parsed = new URL(filename);
+        if (parsed.pathname.startsWith('/uploads/')) {
+          return buildTaskAttachmentProxyHref(`/api/v1/tasks/${task.id}/attachments/${filename}`, filename);
+        }
+        if (/cloudinary\.com|amazonaws\.com/i.test(parsed.host)) {
+          return cloudinaryViewableUrl(filename);
+        }
+      } catch {
+        // ignore
+      }
+      return buildTaskAttachmentProxyHref(`/api/v1/tasks/${task.id}/attachments/${filename}`, filename);
+    }
+    
+    // Otherwise, proxy through the Next app so the browser doesn't need direct backend access
+    return buildTaskAttachmentProxyHref(`/api/v1/tasks/${task.id}/attachments/${filename}`, filename);
+  };
+
+  const getAttachmentPreviewUrl = (filename: string) => {
+    if (!task) return '';
+    return buildTaskPreviewProxyHref(`/api/v1/tasks/${task.id}/attachments/${filename}/preview`, filename);
+  };
+
+  const fetchAttachmentBlob = async () => {
+    if (!task || !selectedAttachment) throw new Error('No attachment selected');
+    const url = getAttachmentUrl(selectedAttachment, selectedAttachmentUrl);
+    if (!url) throw new Error('Attachment URL unavailable');
+
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    const response = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to load file (${response.status})`);
+    }
+
+    return response.blob();
+  };
+
+  const fetchAttachmentPreviewHtml = async () => {
+    if (!task || !selectedAttachment) throw new Error('No attachment selected');
+    const url = getAttachmentPreviewUrl(selectedAttachment);
+    if (!url) throw new Error('Attachment preview unavailable');
+
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    const response = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to load preview (${response.status})`);
+    }
+
+    return response.text();
+  };
+
+  const fetchAttachmentBlobUrl = async () => {
+    if (!task || !selectedAttachment) throw new Error('No attachment selected');
+    const blob = await fetchAttachmentBlob();
+    return URL.createObjectURL(blob);
+  };
+
+  const handleOpenAttachment = async () => {
+    try {
+      if (selectedAttachment && (isWordFile(selectedAttachment) || isSpreadsheetFile(selectedAttachment))) {
+        const html = documentPreviewHtml || await fetchAttachmentPreviewHtml();
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const objectUrl = URL.createObjectURL(blob);
+        const newWindow = window.open(objectUrl, '_blank', 'noopener,noreferrer');
+        if (!newWindow) {
+          window.location.href = objectUrl;
+        }
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+        return;
+      }
+
+      const blob = await fetchAttachmentBlob();
+      const objectUrl = URL.createObjectURL(blob);
+      const newWindow = window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      if (!newWindow) {
+        window.location.href = objectUrl;
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error: any) {
+      setToastMessage(error?.message || 'Failed to open file');
+      setShowErrorToast(true);
+      setTimeout(() => setShowErrorToast(false), 3000);
+    }
+  };
+
+  const handleDownloadAttachment = async () => {
+    try {
+      const blob = await fetchAttachmentBlob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = selectedAttachment || 'attachment';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error: any) {
+      setToastMessage(error?.message || 'Failed to download file');
+      setShowErrorToast(true);
+      setTimeout(() => setShowErrorToast(false), 3000);
+    }
+  };
+
+  // Fetch image with auth headers and convert to blob URL
+  useEffect(() => {
+    if (!showAttachmentViewer || !selectedAttachment || !task) {
+      // Cleanup blob URL when modal closes
+      setImageBlobUrl((prevUrl) => {
+        if (prevUrl && prevUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(prevUrl);
+        }
+        return null;
+      });
+      setSpreadsheetPreview(null);
+      setSpreadsheetLoading(false);
+      setSpreadsheetError(null);
+      setDocumentPreviewHtml(null);
+      setDocumentPreviewLoading(false);
+      setDocumentPreviewError(null);
+      if (pdfBlobUrl && pdfBlobUrl.startsWith('blob:')) URL.revokeObjectURL(pdfBlobUrl);
+      setPdfBlobUrl(null);
+      setPdfLoading(false);
+      setPdfError(null);
+      return;
+    }
+    
+    const url = getAttachmentUrl(selectedAttachment, selectedAttachmentUrl);
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, '') || 'http://localhost:5001/api/v1';
+    const BASE_URL = API_BASE.replace(/\/api\/v1$/, '') || 'http://localhost:5001';
+    
+    // If it's an external URL (not our API), use it directly
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      if (isLocalUploadsUrl(url)) {
+        // Older local upload URLs should still go through the preview/download flow below.
+      } else {
+      // Check if it's a static file URL (starts with base URL + /uploads)
+      if (url.startsWith(`${BASE_URL}/uploads`)) {
+        // Static file, use directly without auth
+        setImageBlobUrl((prevUrl) => {
+          if (prevUrl && prevUrl.startsWith('blob:')) {
+            URL.revokeObjectURL(prevUrl);
+          }
+          return url;
+        });
+        setImageLoading(false);
+        return;
+      }
+      // Check if it's external (not our domain)
+      if (!url.startsWith(API_BASE) && !url.startsWith(BASE_URL)) {
+        // External URL, use directly
+        setImageBlobUrl((prevUrl) => {
+          if (prevUrl && prevUrl.startsWith('blob:')) {
+            URL.revokeObjectURL(prevUrl);
+          }
+          return url;
+        });
+        setImageLoading(false);
+        return;
+      }
+      }
+    }
+    
+    // For our API endpoint or relative URLs, fetch with auth headers if it's an image
+    if (isImageFile(selectedAttachment) && url) {
+      setImageLoading(true);
+      const fetchImage = async () => {
+        try {
+          const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+          if (!token) {
+            setImageBlobUrl(null);
+            setImageLoading(false);
+            return;
+          }
+          
+          const response = await fetch(url, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          });
+          
+          if (response.ok) {
+            const blob = await response.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            setImageBlobUrl((prevUrl) => {
+              if (prevUrl && prevUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(prevUrl);
+              }
+              return blobUrl;
+            });
+          } else {
+            setImageBlobUrl(null);
+          }
+        } catch (error) {
+          console.error('Failed to load image:', error);
+          setImageBlobUrl(null);
+        } finally {
+          setImageLoading(false);
+        }
+      };
+      
+      fetchImage();
+    } else if ((isSpreadsheetFile(selectedAttachment) || isWordFile(selectedAttachment)) && url) {
+      setDocumentPreviewLoading(true);
+      setDocumentPreviewError(null);
+      setDocumentPreviewHtml(null);
+      setSpreadsheetPreview(null);
+      setSpreadsheetLoading(false);
+      setSpreadsheetError(null);
+
+      const fetchDocumentPreview = async () => {
+        try {
+          const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+          const response = await fetch(getAttachmentPreviewUrl(selectedAttachment), {
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            cache: 'no-store',
+          });
+
+          if (!response.ok) {
+            throw new Error(`Failed to load document preview (${response.status})`);
+          }
+
+          const html = await response.text();
+          setDocumentPreviewHtml(html);
+        } catch (error: any) {
+          console.error('Failed to load document preview:', error);
+          setDocumentPreviewError(error?.message || 'Preview unavailable');
+          setDocumentPreviewHtml(null);
+        } finally {
+          setDocumentPreviewLoading(false);
+        }
+      };
+
+      void fetchDocumentPreview();
+    } else if (isPdfFile(selectedAttachment) && url) {
+      setPdfLoading(true);
+      setPdfError(null);
+      if (pdfBlobUrl && pdfBlobUrl.startsWith('blob:')) URL.revokeObjectURL(pdfBlobUrl);
+      setPdfBlobUrl(null);
+      setSpreadsheetPreview(null);
+      setSpreadsheetLoading(false);
+      setSpreadsheetError(null);
+      setDocumentPreviewHtml(null);
+      setDocumentPreviewLoading(false);
+      setDocumentPreviewError(null);
+
+      const fetchPdfPreview = async () => {
+        try {
+          const blobUrl = await fetchAttachmentBlobUrl();
+          setPdfBlobUrl(blobUrl);
+        } catch (error: any) {
+          console.error('Failed to load PDF preview:', error);
+          setPdfError(error?.message || 'Preview unavailable');
+          setPdfBlobUrl(null);
+        } finally {
+          setPdfLoading(false);
+        }
+      };
+
+      void fetchPdfPreview();
+    } else {
+      setImageBlobUrl(null);
+      setImageLoading(false);
+      setSpreadsheetPreview(null);
+      setSpreadsheetLoading(false);
+      setSpreadsheetError(null);
+      setDocumentPreviewHtml(null);
+      setDocumentPreviewLoading(false);
+      setDocumentPreviewError(null);
+      if (pdfBlobUrl && pdfBlobUrl.startsWith('blob:')) URL.revokeObjectURL(pdfBlobUrl);
+      setPdfBlobUrl(null);
+      setPdfLoading(false);
+      setPdfError(null);
+    }
+    
+    // Cleanup blob URL on unmount or when attachment changes
+    return () => {
+      setImageBlobUrl((prevUrl) => {
+        if (prevUrl && prevUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(prevUrl);
+        }
+        return null;
+      });
+    };
+  }, [showAttachmentViewer, selectedAttachment, selectedAttachmentUrl, task]);
+
+  const isImageFile = (filename: string) => {
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'];
+    const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
+    return imageExtensions.includes(ext);
+  };
+
+  const isPdfFile = (filename: string) => {
+    return filename.toLowerCase().endsWith('.pdf');
+  };
+
+  const isSpreadsheetFile = (filename: string) => {
+    const lower = filename.toLowerCase();
+    return lower.endsWith('.xlsx') || lower.endsWith('.xls');
+  };
+
+  const isWordFile = (filename: string) => {
+    const lower = filename.toLowerCase();
+    return lower.endsWith('.docx') || lower.endsWith('.doc');
+  };
+
+  const isLocalUploadsUrl = (value: string) => {
+    try {
+      return new URL(value).pathname.startsWith('/uploads/');
+    } catch {
+      return value.startsWith('/uploads/');
+    }
+  };
+
+  const buildTaskPreviewProxyHref = (apiPath: string, filename: string) => {
+    const params = new URLSearchParams({
+      path: apiPath,
+      filename,
+      preview: '1',
+    });
+    return `/api/download-file?${params.toString()}`;
+  };
+
+  const resetCreateForm = () => setCreateForm(CREATE_FORM_INITIAL);
+
+  const finishClose = useCallback(() => {
+    if (mode === 'create') resetCreateForm();
+    setShowSuccessToast(false);
+    setShowErrorToast(false);
+    setToastMessage('');
+    setIsEditDirty(false);
+    onClose();
+  }, [mode, onClose]);
+
+  const {
+    panelRef: taskDrawerPanelRef,
+    requestClose: requestTaskDrawerClose,
+    markClean: markTaskDrawerClean,
+  } = useDrawerUnsavedGuard<HTMLDivElement>({
+    isOpen,
+    onClose: finishClose,
+    isDirty: mode === 'edit' && isEditDirty,
+  });
+
+  const handleClose = () => {
+    void requestTaskDrawerClose();
+  };
+
+  const handleCreateTask = async () => {
+    setIsSubmitting(true);
+    try {
+      if (createForm.crossDepartmentRequest) {
+        const { createCrossDeptRequest } = await import('../../lib/api/teamApi');
+        const priority = (createForm.priority || 'Medium').toLowerCase() as 'low' | 'medium' | 'high';
+        const relatedTo = createForm.relatedTo && createForm.relatedTo !== 'Internal' ? createForm.relatedTo : undefined;
+        const linkedEntityId =
+          relatedTo && createForm.relatedEntityId ? createForm.relatedEntityId : undefined;
+
+        await createCrossDeptRequest({
+          subject: createForm.title.trim(),
+          description: createForm.description?.trim() || undefined,
+          priority,
+          workType: 'TASK',
+          targetDepartmentId: createForm.targetDepartmentId || '',
+          targetUserId: createForm.targetMemberId || undefined,
+          linkedEntityType: relatedTo,
+          linkedEntityId,
+          payload: {
+            dueDate: createForm.dueDate,
+            dueTime: createForm.dueTime || undefined,
+            reminder: createForm.reminder || undefined,
+            relatedTo: createForm.relatedTo || undefined,
+            priority: createForm.priority || 'Medium',
+            notifyAssignee: createForm.notifyAssignee,
+            attachmentNames: createForm.attachmentNames || undefined,
+          },
+        });
+
+        setToastMessage('Cross-department request sent for approval');
+        setShowSuccessToast(true);
+        setTimeout(() => setShowSuccessToast(false), 3000);
+        onCreateSuccess?.();
+        markTaskDrawerClean();
+        handleClose();
+        return;
+      }
+
+      const { apiCreateTask, apiUploadTaskFiles } = await import('../../lib/api');
+      
+      // Create task first
+      const task = await apiCreateTask({
+        title: createForm.title,
+        description: createForm.description,
+        relatedTo: createForm.relatedTo as any,
+        relatedEntityId: createForm.relatedEntityId,
+        assigneeId: createForm.assigneeId,
+        priority: createForm.priority as any,
+        dueDate: createForm.dueDate,
+        dueTime: createForm.dueTime || undefined,
+        reminder: createForm.reminder || undefined,
+        attachmentNames: createForm.attachmentNames || undefined,
+        notifyAssignee: createForm.notifyAssignee,
+        completionApproverId: createForm.completionApproverId || undefined,
+      });
+
+      // Upload files if any
+      if (createForm._files && createForm._files.length > 0 && task.data?.id) {
+        try {
+          await apiUploadTaskFiles(task.data.id, createForm._files);
+        } catch (fileError: any) {
+          console.error('Failed to upload files:', fileError);
+          // Don't fail the whole operation if file upload fails
+        }
+      }
+
+      onCreateSuccess?.(task.data?.id);
+      markTaskDrawerClean();
+      handleClose();
+    } catch (error: any) {
+      console.error('Failed to create task:', error);
+      setToastMessage(error.message || 'Failed to create task');
+      setShowSuccessToast(true);
+      setTimeout(() => {
+        setShowSuccessToast(false);
+      }, 3000);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSaveTask = async () => {
+    if (!task) return;
+    setIsSaving(true);
+    try {
+      const { apiUpdateTask, apiUploadTaskFiles } = await import('../../lib/api');
+      
+      // Update task first
+      await apiUpdateTask(task.id, {
+        title: editForm.title,
+        description: editForm.description,
+        relatedTo: editForm.relatedTo as any,
+        relatedEntityId: editForm.relatedEntityId,
+        assigneeId: editForm.assigneeId,
+        priority: editForm.priority as any,
+        dueDate: editForm.dueDate,
+        dueTime: editForm.dueTime || undefined,
+        reminder: editForm.reminder || undefined,
+        attachmentNames: editForm.attachmentNames || undefined,
+        notifyAssignee: editForm.notifyAssignee,
+        status: editForm.status as any,
+      });
+
+      // Upload files if any
+      if (editForm._files && editForm._files.length > 0) {
+        try {
+          await apiUploadTaskFiles(task.id, editForm._files);
+        } catch (fileError: any) {
+          console.error('Failed to upload files:', fileError);
+          // Don't fail the whole operation if file upload fails
+        }
+      }
+
+      setToastMessage('Task updated successfully');
+      setShowSuccessToast(true);
+      setTimeout(() => {
+        setShowSuccessToast(false);
+        onUpdateSuccess?.();
+        onExitEdit?.(); // switch back to detail view
+      }, 2000);
+    } catch (error: any) {
+      console.error('Failed to update task:', error);
+      setToastMessage(error.message || 'Failed to update task');
+      setShowSuccessToast(true);
+      setTimeout(() => {
+        setShowSuccessToast(false);
+      }, 3000);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleCancelEdit = async () => {
+    if (isEditDirty) {
+      const confirmed = await confirmDiscardUnsavedChanges();
+      if (!confirmed) return;
+      setIsEditDirty(false);
+    }
+    onExitEdit?.();
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <AnimatePresence>
+      <DetailsModalShell
+        panelRef={taskDrawerPanelRef}
+        onBackdropClick={handleClose}
+        size="lg"
+        variant="main"
+        zIndexClass="z-50"
+        dialogTitleId="task-detail-modal-title"
+      >
+        {/* Header */}
+        <div className="shrink-0 border-b border-slate-200 p-5 flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            {mode === 'detail' && task ? (
+              <>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">TASK DETAILS</p>
+                <h2 id="task-detail-modal-title" className="text-lg font-bold text-slate-900 mt-0.5 truncate">{task.title}</h2>
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${PRIORITY_STYLES[task.priority]}`}>{task.priority}</span>
+                  <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${STATUS_STYLES[task.status]}`}>{task.status}</span>
+                  <TaskSLAAlertBadge dueDate={task.dueDate} status={task.status} variant="header" />
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="text-lg font-bold text-slate-900">
+                  {mode === 'create' && 'Create New Task'}
+                  {mode === 'edit' && 'Edit Task'}
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {mode === 'create' && 'Add a follow-up or operational task'}
+                  {mode === 'edit' && 'Update task details and assignment'}
+                </p>
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {mode === 'detail' && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowMoreMenu((v) => !v)}
+                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                  aria-label="More actions"
+                >
+                  <MoreVertical size={20} />
+                </button>
+                {showMoreMenu && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setShowMoreMenu(false)} aria-hidden />
+                    <div className="absolute right-0 top-full mt-1 py-1 w-48 bg-white rounded-xl border border-slate-200 shadow-lg z-20">
+                      <button type="button" onClick={() => { onRequestEdit?.(); setShowMoreMenu(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+                        <Pencil size={14} /> Edit Task
+                      </button>
+                      <button type="button" onClick={() => { task && showSubmitAction && onMarkCompleted?.(task.id); setShowMoreMenu(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2 disabled:opacity-50" disabled={!showSubmitAction}>
+                        <CheckSquare size={14} /> {submitLabel}
+                      </button>
+                      <button type="button" onClick={() => { task && onDelete?.(task.id); setShowMoreMenu(false); }} className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
+                        <Trash2 size={14} /> Delete Task
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={handleClose}
+              className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              aria-label="Close"
+            >
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        {mode === 'create' ? (
+          <TaskForm
+            mode="create"
+            values={createForm}
+            onChange={setCreateForm}
+            onSubmit={handleCreateTask}
+            onCancel={handleClose}
+            isSubmitting={isSubmitting}
+          />
+        ) : mode === 'edit' && task ? (
+          <TaskForm
+            mode="edit"
+            values={editForm}
+            initialValues={taskToFormValues(task)}
+            onChange={setEditForm}
+            onSubmit={handleSaveTask}
+            onCancel={handleCancelEdit}
+            isSubmitting={isSaving}
+            lastUpdated={task.lastUpdated ?? { by: task.owner.name, at: 'Feb 12, 10:45 AM' }}
+            onDirtyChange={setIsEditDirty}
+          />
+        ) : (
+          /* Task Detail — full layout: banners, tabs Overview | Activity | Communication, sticky footer */
+          <>
+            {task && (
+              <>
+                {/* Overdue / Completed banners */}
+                {task.status === 'Overdue' && (
+                  <div className="shrink-0 flex items-center gap-2 px-5 py-3 bg-red-50 border-b border-red-100 text-red-800">
+                    <AlertCircle size={18} className="shrink-0" />
+                    <span className="text-sm font-medium">This task is overdue.</span>
+                  </div>
+                )}
+                {task.status === 'Awaiting Approval' && (
+                  <div className="shrink-0 flex items-center gap-2 px-5 py-3 bg-amber-50 border-b border-amber-100 text-amber-900">
+                    <Clock size={18} className="shrink-0" />
+                    <span className="text-sm font-medium">This task is awaiting manager approval.</span>
+                  </div>
+                )}
+                {task.status === 'Completed' && (
+                  <div className="shrink-0 flex items-center gap-2 px-5 py-3 bg-emerald-50 border-b border-emerald-100 text-emerald-800">
+                    <CheckSquare size={18} className="shrink-0" />
+                    <span className="text-sm font-medium">This task is completed.</span>
+                  </div>
+                )}
+              </>
+            )}
+
+            {isLoading ? (
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                <div className="h-8 bg-slate-200 rounded-lg animate-pulse w-2/3" />
+                <div className="h-24 bg-slate-100 rounded-xl animate-pulse" />
+                <div className="h-32 bg-slate-100 rounded-xl animate-pulse" />
+              </div>
+            ) : (
+              <>
+                <DrawerTabBar
+                  ariaLabel="Task sections"
+                  tabs={[
+                    { id: 'overview' as const, label: 'Overview', icon: LayoutGrid },
+                    { id: 'activity' as const, label: 'Activity', icon: Activity },
+                    { id: 'communication' as const, label: 'Communication', icon: MessageSquare },
+                    { id: 'chat' as const, label: 'Chat', icon: MessagesSquare },
+                    { id: 'alerts' as const, label: 'SLA Alerts', icon: AlertTriangle },
+                    { id: 'suggestions' as const, label: 'AI Suggestions', icon: Sparkles },
+                  ]}
+                  activeId={activeTab}
+                  onChange={setActiveTab}
+                />
+
+                <div className="flex-1 overflow-y-auto bg-slate-50/30 p-5">
+                  {task && activeTab === 'overview' && (
+                    <div className="space-y-4">
+                      <EntityWorkspaceAlertsPanel
+                        entityType="TASK"
+                        entityId={task.id}
+                        entityLabel={task.title || 'Task'}
+                      />
+                      {showDelegatePanel ? (
+                        <div className="rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 p-5 shadow-sm">
+                          <p className="text-xs font-bold uppercase tracking-wider text-violet-700">
+                            Delegate task
+                          </p>
+                          <p className="mt-1 text-sm text-slate-700">
+                            Assign this work to a lower-ranked team member. You can verify completion yourself after delegation.
+                          </p>
+                          <div className="mt-3 flex flex-wrap items-end gap-3">
+                            <div className="min-w-[12rem] flex-1">
+                              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                                Delegate to
+                              </label>
+                              <select
+                                value={delegateAssigneeId}
+                                onChange={(e) => setDelegateAssigneeId(e.target.value)}
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                              >
+                                <option value="">Select team member…</option>
+                                {delegateTargets.map((member) => (
+                                  <option key={member.id} value={member.id}>
+                                    {member.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {canSelfApprove ? (
+                              <label className="flex items-center gap-2 text-sm text-slate-700 pb-2">
+                                <input
+                                  type="checkbox"
+                                  checked={delegateSelfAsApprover}
+                                  onChange={(e) => setDelegateSelfAsApprover(e.target.checked)}
+                                  className="rounded border-slate-300"
+                                />
+                                I will verify completion
+                              </label>
+                            ) : null}
+                            <button
+                              type="button"
+                              disabled={isDelegating || !delegateAssigneeId}
+                              onClick={() => void handleDelegateTask()}
+                              className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-60"
+                            >
+                              {isDelegating ? 'Delegating…' : 'Delegate'}
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                      {showCreateJobFromRequest ? (
+                        <div className="rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-violet-50 p-5 shadow-sm">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-bold uppercase tracking-wider text-indigo-700">
+                                Approved hiring request
+                              </p>
+                              <p className="mt-1 text-sm text-slate-700">
+                                Create a job from this task. Line Manager will default to{' '}
+                                <span className="font-semibold text-slate-900">
+                                  {linkedTeamRequest?.requestedByName || 'the original requester'}
+                                </span>
+                                .
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setCreateJobDrawerOpen(true)}
+                              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-700"
+                            >
+                              <Briefcase size={16} />
+                              Create Job
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                      {isTeamRequestTask && loadingTeamRequest ? (
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                          Loading hiring request details…
+                        </div>
+                      ) : null}
+                      {linkedTeamRequest?.linkedJobId ? (
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                          A job has already been created from this hiring request.
+                        </div>
+                      ) : null}
+                      {/* Task Information Section */}
+                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Task Information</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Assigned To</p>
+                            <div className="flex items-center gap-2 mt-1">
+                              <ImageWithFallback src={task.owner.avatar} alt="" className="w-6 h-6 rounded-full border border-slate-200" />
+                              <span className="text-sm font-medium text-slate-900">{task.owner.name}</span>
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Priority</p>
+                            <p className="text-sm font-medium text-slate-900 mt-1">{task.priority}</p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Due Date</p>
+                            <p className="text-sm font-medium text-slate-900 mt-1">{task.dueDate} {task.time && `· ${task.time}`}</p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Status</p>
+                            <p className="text-sm font-medium text-slate-900 mt-1">{task.status}</p>
+                          </div>
+                          {task.reminder && (
+                            <div className="col-span-2">
+                              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Reminder</p>
+                              <p className="text-sm font-medium text-slate-900 mt-1">{task.reminder}</p>
+                            </div>
+                          )}
+                          {task.createdBy && (
+                            <div>
+                              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Created By</p>
+                              <p className="text-sm font-medium text-slate-900 mt-1">{task.createdBy.name} · {task.createdBy.at}</p>
+                            </div>
+                          )}
+                          {task.lastUpdated && (
+                            <div>
+                              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Last Updated</p>
+                              <p className="text-sm font-medium text-slate-900 mt-1">{task.lastUpdated.by} · {task.lastUpdated.at}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Related Entity Card — clickable */}
+                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Related {task.relatedTo.type}</h4>
+                        {task.relatedTo.type === 'Team Request' ? (
+                          <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/50">
+                            <span className="text-sm font-medium text-slate-900">
+                              {linkedTeamRequest?.subject || task.relatedTo.name}
+                            </span>
+                            {linkedTeamRequest?.requestedByName ? (
+                              <p className="mt-1 text-xs text-slate-500">
+                                Requested by {linkedTeamRequest.requestedByName}
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onRelatedEntityClick?.(task.relatedTo)}
+                              className="w-full flex items-center justify-between gap-2 p-3 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-100 hover:border-slate-300 transition-colors text-left group"
+                            >
+                              <span className="text-sm font-medium text-slate-900">{task.relatedTo.name}</span>
+                              <ExternalLink size={14} className="text-slate-400 group-hover:text-blue-600 shrink-0" />
+                            </button>
+                            <p className="text-[11px] text-slate-500 mt-1">Click to open {task.relatedTo.type.toLowerCase()} profile</p>
+                          </>
+                        )}
+                      </div>
+
+                      {task.description && (
+                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                          <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Description</h4>
+                          <p className="text-sm text-slate-700 whitespace-pre-wrap">{task.description}</p>
+                        </div>
+                      )}
+
+                      {/* Remarks Section */}
+                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Remarks</h4>
+                          <button 
+                            type="button" 
+                            onClick={() => setShowAddNote(!showAddNote)}
+                            className="flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:text-blue-700"
+                          >
+                            <Plus size={14} /> Add Remark
+                          </button>
+                        </div>
+                        
+                        {showAddNote && (
+                          <div className="mb-4 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                            <textarea
+                              value={newNote}
+                              onChange={(e) => setNewNote(e.target.value)}
+                              placeholder="Enter your remark here..."
+                              rows={3}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-y mb-2"
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowAddNote(false);
+                                  setNewNote('');
+                                }}
+                                className="px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-700"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleAddNote}
+                                disabled={!newNote.trim() || isAddingNote}
+                                className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {isAddingNote ? (
+                                  <>Adding...</>
+                                ) : (
+                                  <>
+                                    <Send size={14} /> Add
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {task.notes && task.notes.length > 0 ? (
+                          <div className="space-y-2">
+                            {task.notes.map((note, i) => (
+                              <div key={i} className="text-sm text-slate-700 bg-slate-50 rounded-lg p-3 border border-slate-100">
+                                <p className="whitespace-pre-wrap">{note}</p>
+                                <p className="text-xs text-slate-400 mt-1">
+                                  Added {formatDateDMY(new Date())}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          !showAddNote && <p className="text-sm text-slate-500 italic">No remarks yet.</p>
+                        )}
+                      </div>
+
+                      {/* Attachments */}
+                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Attachments</h4>
+                        {((task.attachments && task.attachments.length > 0) || hydratedAttachments.length > 0) ? (
+                          <ul className="space-y-2">
+                            {(task.attachments && task.attachments.length > 0 ? task.attachments : hydratedAttachments).map((att, i) => (
+                              <li key={i} className="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-slate-50 transition-colors">
+                                <div className="flex items-center gap-2 text-sm text-slate-700 flex-1 min-w-0">
+                                  <Paperclip size={14} className="text-slate-400 shrink-0" />
+                                  <span className="truncate">{att.name}</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleViewAttachment(att)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors shrink-0"
+                                >
+                                  <Eye size={14} /> View
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-sm text-slate-500 italic">No attachments.</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {task && activeTab === 'activity' && (
+                    <div className="space-y-4">
+                      <EntityAuditSummary audit={task.auditMeta} />
+                      <TaskActivityLog events={activityEvents} />
+                    </div>
+                  )}
+
+                  {task && activeTab === 'communication' && (
+                    <div className="space-y-6">
+                      <TaskCommunicationHistory entries={communicationEntries} />
+                      {task.relatedTo?.type === 'Candidate' && candidateInteractionEntries.length > 0 && (
+                        <CandidateInteractionLogs entries={candidateInteractionEntries} />
+                      )}
+                    </div>
+                  )}
+
+                  {task && activeTab === 'chat' && (
+                    <DrawerEntityChatTab
+                      entityType="TASK"
+                      entityId={task.id}
+                      entityLabel={task.title}
+                      isActive={activeTab === 'chat'}
+                      isOpen={isOpen}
+                    />
+                  )}
+
+                  {task && activeTab === 'alerts' && (
+                    <div className="space-y-4">
+                      {getDaysOverdue(task.dueDate) > 0 && task.status !== 'Completed' ? (
+                        <TaskSLAAlertsPanel
+                          tasks={[{ id: task.id, title: task.title, dueDate: task.dueDate, status: task.status }]}
+                          showAITip
+                        />
+                      ) : (
+                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center">
+                          <AlertTriangle size={32} className="mx-auto text-slate-300 mb-3" />
+                          <p className="text-sm font-medium text-slate-600">No SLA alert for this task.</p>
+                          <p className="text-xs text-slate-500 mt-1">This task is not overdue.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {task && activeTab === 'suggestions' && (
+                    <div className="space-y-4">
+                      {aiSuggestions.length > 0 ? (
+                        <AITaskSuggestionsPanel
+                          suggestions={aiSuggestions}
+                          onCreateTask={onCreateTaskFromSuggestion}
+                        />
+                      ) : (
+                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center">
+                          <Sparkles size={32} className="mx-auto text-slate-300 mb-3" />
+                          <p className="text-sm font-medium text-slate-600">No AI suggestions right now.</p>
+                          <p className="text-xs text-slate-500 mt-1">Suggestions will appear here based on inactivity and pending follow-ups.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Sticky footer actions */}
+                {task && (
+                  <div className="shrink-0 border-t border-slate-200 bg-white p-4 flex flex-col gap-3">
+                    {showRejectNote && (
+                      <div className="rounded-xl border border-rose-200 bg-rose-50/50 p-3">
+                        <p className="text-xs font-semibold text-rose-800 mb-2">Rejection note (optional)</p>
+                        <textarea
+                          value={rejectNote}
+                          onChange={(e) => setRejectNote(e.target.value)}
+                          rows={2}
+                          placeholder="Tell the assignee what needs to change..."
+                          className="w-full rounded-lg border border-rose-200 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400 resize-y"
+                        />
+                        <div className="mt-2 flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowRejectNote(false);
+                              setRejectNote('');
+                            }}
+                            className="px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-800"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleRejectCompletion()}
+                            disabled={isRejecting}
+                            className="px-4 py-1.5 text-sm font-medium text-white bg-rose-600 rounded-lg hover:bg-rose-700 disabled:opacity-50"
+                          >
+                            {isRejecting ? 'Rejecting…' : 'Confirm reject'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center justify-end gap-3">
+                    <button type="button" onClick={onRequestEdit} className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-xl hover:bg-slate-50">
+                      <Pencil size={14} /> Edit Task
+                    </button>
+                    {showApprovalActions ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onApproveCompletion?.(task.id)}
+                          className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-emerald-600 rounded-xl hover:bg-emerald-700"
+                        >
+                          <CheckSquare size={14} /> Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowRejectNote(true)}
+                          className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-xl hover:bg-rose-100"
+                        >
+                          <X size={14} /> Reject
+                        </button>
+                      </>
+                    ) : showSubmitAction ? (
+                      <button
+                        type="button"
+                        onClick={() => onMarkCompleted?.(task.id)}
+                        className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white rounded-xl ${
+                          submitLabel === 'Submit for approval'
+                            ? 'bg-amber-600 hover:bg-amber-700'
+                            : 'bg-emerald-600 hover:bg-emerald-700'
+                        }`}
+                      >
+                        <CheckSquare size={14} /> {submitLabel}
+                      </button>
+                    ) : null}
+                    <button type="button" onClick={() => onDelete?.(task.id)} className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-xl hover:bg-red-100">
+                      <Trash2 size={14} /> Delete Task
+                    </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {/* Success toast */}
+        <AnimatePresence>
+          {showSuccessToast && mode !== 'detail' && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="fixed bottom-6 right-6 z-[60] bg-emerald-600 text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-2"
+            >
+              <CheckSquare size={18} />
+              <span className="text-sm font-medium">{toastMessage}</span>
+            </motion.div>
+          )}
+          {showErrorToast && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="fixed bottom-6 right-6 z-[60] bg-red-600 text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-2"
+            >
+              <AlertCircle size={18} />
+              <span className="text-sm font-medium">{toastMessage}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Attachment Viewer Modal */}
+        <AnimatePresence>
+          {showAttachmentViewer && selectedAttachment && task && (
+            <>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => {
+                  setShowAttachmentViewer(false);
+                  setSelectedAttachment(null);
+                }}
+                className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-sm"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="fixed inset-0 z-[71] flex items-center justify-center p-4"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] flex flex-col">
+                  {/* Header with Download button in top corner */}
+                  <div className="flex items-center justify-between p-4 border-b border-slate-200">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <Paperclip size={20} className="text-slate-400 shrink-0" />
+                      <h3 className="text-lg font-bold text-slate-900 truncate">{selectedAttachment}</h3>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={handleDownloadAttachment}
+                        className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
+                      >
+                        <Paperclip size={16} /> Download
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAttachmentViewer(false);
+                          setSelectedAttachment(null);
+                        }}
+                        className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* Preview Content */}
+                  <div className="flex-1 overflow-auto p-6 bg-slate-50">
+                    {isImageFile(selectedAttachment) ? (
+                      <div className="flex items-center justify-center min-h-[500px]">
+                        <div className="relative max-w-full max-h-[70vh] bg-white rounded-lg p-4 shadow-lg">
+                          {/* Show image if blob URL or direct URL is available */}
+                          {imageLoading ? (
+                            <div className="flex flex-col items-center justify-center min-h-[400px] bg-slate-50 rounded-lg border-2 border-dashed border-slate-300 p-8">
+                              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+                              <p className="text-sm text-slate-600">Loading image...</p>
+                            </div>
+                          ) : imageBlobUrl || (selectedAttachmentUrl && (selectedAttachmentUrl.startsWith('http://') || selectedAttachmentUrl.startsWith('https://'))) ? (
+                            <img
+                              src={imageBlobUrl || selectedAttachmentUrl || ''}
+                              alt={selectedAttachment}
+                              className="max-w-full max-h-[70vh] object-contain rounded-lg"
+                              onError={(e) => {
+                                // Fallback if image fails to load
+                                const img = e.target as HTMLImageElement;
+                                img.style.display = 'none';
+                                const fallback = img.parentElement?.querySelector('.image-fallback') as HTMLElement;
+                                if (fallback) fallback.style.display = 'flex';
+                              }}
+                            />
+                          ) : (
+                            <div className="image-fallback flex flex-col items-center justify-center min-h-[400px] bg-slate-50 rounded-lg border-2 border-dashed border-slate-300 p-8">
+                              <FileText size={64} className="text-slate-300 mb-4" />
+                              <p className="text-sm text-slate-600 mb-2">Image Preview Unavailable</p>
+                              <p className="text-xs text-slate-500 mb-4">{selectedAttachment}</p>
+                              <button
+                                type="button"
+                                onClick={handleDownloadAttachment}
+                                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                              >
+                                <Paperclip size={16} /> Download File
+                              </button>
+                            </div>
+                          )}
+                          {/* Hidden fallback for when image fails to load */}
+                          <div className="image-fallback hidden flex-col items-center justify-center min-h-[400px] bg-slate-50 rounded-lg border-2 border-dashed border-slate-300 p-8">
+                            <FileText size={64} className="text-slate-300 mb-4" />
+                            <p className="text-sm text-slate-600 mb-2">Image Preview Unavailable</p>
+                            <p className="text-xs text-slate-500 mb-4">{selectedAttachment}</p>
+                            <button
+                              type="button"
+                              onClick={handleDownloadAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                            >
+                              <Paperclip size={16} /> Download File
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : isPdfFile(selectedAttachment) ? (
+                      <div className="flex flex-col items-center justify-center min-h-[500px]">
+                        <div className="bg-white rounded-lg border border-dashed border-slate-300 p-4 w-full max-w-6xl shadow-sm">
+                          <div className="flex items-center justify-center mb-5">
+                            <div className="h-20 w-20 rounded-2xl bg-slate-100 flex items-center justify-center border border-slate-200">
+                              <FileText size={40} className="text-slate-300" />
+                            </div>
+                          </div>
+                          <p className="text-sm text-slate-600 mb-2 text-center">PDF Preview</p>
+                          <p className="text-xs text-slate-500 mb-6 text-center break-all">{selectedAttachment}</p>
+                          <div className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                            {pdfLoading ? (
+                              <div className="flex items-center justify-center h-[65vh] bg-slate-50">
+                                <div className="text-center">
+                                  <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600" />
+                                  <p className="text-sm text-slate-600">Loading PDF preview...</p>
+                                </div>
+                              </div>
+                            ) : pdfError ? (
+                              <div className="flex items-center justify-center h-[65vh] bg-slate-50">
+                                <div className="text-center p-6">
+                                  <p className="text-sm font-medium text-slate-700">Preview unavailable</p>
+                                  <p className="mt-2 text-xs text-slate-500">{pdfError}</p>
+                                </div>
+                              </div>
+                            ) : pdfBlobUrl ? (
+                              <iframe
+                                title={selectedAttachment}
+                                src={`${pdfBlobUrl}#toolbar=1&navpanes=0`}
+                                className="h-[65vh] w-full bg-white"
+                              />
+                            ) : (
+                              <div className="flex items-center justify-center h-[65vh] bg-slate-50">
+                                <div className="text-center p-6">
+                                  <p className="text-sm font-medium text-slate-700">No preview data available</p>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex gap-3 justify-center">
+                            <button
+                              type="button"
+                              onClick={handleOpenAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                            >
+                              <ExternalLink size={16} /> Open PDF
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleDownloadAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                            >
+                              <Paperclip size={16} /> Download
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : isSpreadsheetFile(selectedAttachment) ? (
+                      <div className="flex flex-col items-center justify-center min-h-[500px]">
+                        <div className="bg-white rounded-lg border border-dashed border-slate-300 p-4 w-full max-w-6xl shadow-sm">
+                          <div className="flex items-center justify-center mb-5">
+                            <div className="h-20 w-20 rounded-2xl bg-slate-100 flex items-center justify-center border border-slate-200">
+                              <FileText size={40} className="text-slate-300" />
+                            </div>
+                          </div>
+                          <p className="text-sm text-slate-600 mb-2 text-center">Spreadsheet Preview</p>
+                          <p className="text-xs text-slate-500 mb-6 text-center break-all">{selectedAttachment}</p>
+
+                          {documentPreviewLoading ? (
+                            <div className="flex items-center justify-center rounded-xl border border-slate-200 bg-slate-50 py-16">
+                              <div className="text-center">
+                                <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600" />
+                                <p className="text-sm text-slate-600">Loading spreadsheet preview...</p>
+                              </div>
+                            </div>
+                          ) : documentPreviewError ? (
+                            <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center">
+                              <p className="text-sm font-medium text-slate-700">Preview unavailable</p>
+                              <p className="mt-2 text-xs text-slate-500">{documentPreviewError}</p>
+                            </div>
+                          ) : documentPreviewHtml ? (
+                            <div className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                              <iframe
+                                title={selectedAttachment}
+                                srcDoc={documentPreviewHtml}
+                                className="h-[65vh] w-full bg-white"
+                                sandbox="allow-same-origin"
+                              />
+                            </div>
+                          ) : (
+                            <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center">
+                              <p className="text-sm font-medium text-slate-700">No preview data available</p>
+                              <p className="mt-2 text-xs text-slate-500">You can still open or download the file below.</p>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap gap-3 justify-center">
+                            <button
+                              type="button"
+                              onClick={handleOpenAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                            >
+                              <ExternalLink size={16} /> Open File
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleDownloadAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                            >
+                              <Paperclip size={16} /> Download
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : isWordFile(selectedAttachment) ? (
+                      <div className="flex flex-col items-center justify-center min-h-[500px]">
+                        <div className="bg-white rounded-lg border border-dashed border-slate-300 p-4 w-full max-w-6xl shadow-sm">
+                          <div className="flex items-center justify-center mb-5">
+                            <div className="h-20 w-20 rounded-2xl bg-slate-100 flex items-center justify-center border border-slate-200">
+                              <FileText size={40} className="text-slate-300" />
+                            </div>
+                          </div>
+                          <p className="text-sm text-slate-600 mb-2 text-center">Document Preview</p>
+                          <p className="text-xs text-slate-500 mb-6 text-center break-all">{selectedAttachment}</p>
+
+                          {documentPreviewLoading ? (
+                            <div className="flex items-center justify-center rounded-xl border border-slate-200 bg-slate-50 py-16">
+                              <div className="text-center">
+                                <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600" />
+                                <p className="text-sm text-slate-600">Loading document preview...</p>
+                              </div>
+                            </div>
+                          ) : documentPreviewError ? (
+                            <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center">
+                              <p className="text-sm font-medium text-slate-700">Preview unavailable</p>
+                              <p className="mt-2 text-xs text-slate-500">{documentPreviewError}</p>
+                            </div>
+                          ) : documentPreviewHtml ? (
+                            <div className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                              <iframe
+                                title={selectedAttachment}
+                                srcDoc={documentPreviewHtml}
+                                className="h-[65vh] w-full bg-white"
+                                sandbox="allow-same-origin"
+                              />
+                            </div>
+                          ) : (
+                            <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center">
+                              <p className="text-sm font-medium text-slate-700">No preview data available</p>
+                              <p className="mt-2 text-xs text-slate-500">You can still open or download the file below.</p>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap gap-3 justify-center">
+                            <button
+                              type="button"
+                              onClick={handleOpenAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                            >
+                              <ExternalLink size={16} /> Open File
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleDownloadAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                            >
+                              <Paperclip size={16} /> Download
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center min-h-[500px]">
+                        <div className="bg-white rounded-lg border border-dashed border-slate-300 p-8 w-full max-w-2xl shadow-sm">
+                          <div className="flex items-center justify-center mb-6">
+                            <div className="h-20 w-20 rounded-2xl bg-slate-100 flex items-center justify-center border border-slate-200">
+                              <FileText size={40} className="text-slate-300" />
+                            </div>
+                          </div>
+                          <p className="text-sm text-slate-600 mb-2 text-center">Document Preview</p>
+                          <p className="text-xs text-slate-500 mb-6 text-center break-all">{selectedAttachment}</p>
+                          <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center">
+                            <p className="text-sm font-medium text-slate-700">Preview unavailable for this file type</p>
+                            <p className="mt-2 text-xs text-slate-500">You can still open or download the file below.</p>
+                          </div>
+                          <div className="flex flex-wrap gap-3 justify-center">
+                            <button
+                              type="button"
+                              onClick={handleOpenAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                            >
+                              <ExternalLink size={16} /> Open File
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleDownloadAttachment}
+                              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                            >
+                              <Paperclip size={16} /> Download
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+      </DetailsModalShell>
+
+      <CreateJobDrawer
+        isOpen={createJobDrawerOpen}
+        onClose={() => setCreateJobDrawerOpen(false)}
+        prefillFromRequest={jobPrefillFromRequest}
+        onJobCreated={async () => {
+          setCreateJobDrawerOpen(false);
+          if (task?.relatedTo.id) {
+            try {
+              const res = await getTeamRequest(task.relatedTo.id);
+              setLinkedTeamRequest(res.data);
+            } catch {
+              // ignore refresh errors
+            }
+          }
+          onUpdateSuccess?.();
+        }}
+      />
+    </AnimatePresence>
+  );
+}
