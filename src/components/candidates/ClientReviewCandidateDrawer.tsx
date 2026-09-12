@@ -47,9 +47,11 @@ export function ClientReviewCandidateDrawer({
   const submissionType = String(reviewData?.submissionType || 'GENERAL').toUpperCase();
   const isOfferFlow = submissionType === 'OFFER_CONFIRMATION';
   const tagOptions = TAG_OPTIONS_BY_TYPE[submissionType] || TAG_OPTIONS_BY_TYPE.GENERAL;
-  // Prefer the fixed Client Preview stage list so clients always see the same options.
-  // Job pipeline stages from the payload are ignored for this dropdown.
-  const stageOptions = CLIENT_PIPELINE_STAGE_CHOICES;
+  // Use recruiter-selected stages from the preview payload when present.
+  const stageOptions =
+    Array.isArray(reviewData?.pipelineStages) && reviewData.pipelineStages.length
+      ? reviewData.pipelineStages
+      : CLIENT_PIPELINE_STAGE_CHOICES;
   const tracker = normalizeClientTrackerOptions(reviewData?.trackerOptions, true);
   const canRespond = clientTrackerAllowsResponse(tracker);
   const canAttachDocument = tracker.attachDocument || isOfferFlow;

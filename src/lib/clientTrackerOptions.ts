@@ -62,8 +62,7 @@ export const CLIENT_TRACKER_OPTION_FIELDS: Array<{
     id: 'changeStage',
     label: 'Change stage',
     action: true,
-    hint:
-      'Client picks Applied, Shortlisted by Client, Feedback Pending, Joined, etc. Shown in the preview table and on the Client tab (does not move CRM pipeline)',
+    hint: 'Choose which stages the client can pick. Shown in the preview table and on the Client tab (does not move CRM pipeline).',
   },
   { id: 'attachDocument', label: 'Attach document', action: true },
   { id: 'downloadFiles', label: 'Download files' },
@@ -85,4 +84,38 @@ export function normalizeClientTrackerOptions(
 
 export function clientTrackerAllowsResponse(options: ClientTrackerOptions): boolean {
   return options.addRemarks || options.addComments || options.attachDocument || options.changeStage;
+}
+
+/** All stage names recruiters can offer on a Client Preview link. */
+export function allClientPreviewStageNames(
+  stages: Array<{ id: string; name: string }> = [],
+): string[] {
+  return stages.map((s) => String(s.name || '').trim()).filter(Boolean);
+}
+
+/** Normalize recruiter-selected stage names against the fixed catalog. */
+export function normalizeAllowedClientStages(
+  raw: unknown,
+  catalog: Array<{ id: string; name: string }>,
+  fallbackAll = true,
+): string[] {
+  const byName = new Map(
+    catalog.map((row) => [row.name.toLowerCase(), row.name] as const),
+  );
+  const byId = new Map(catalog.map((row) => [row.id.toLowerCase(), row.name] as const));
+  const incoming = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(',').map((part) => part.trim())
+      : [];
+  const picked: string[] = [];
+  for (const item of incoming) {
+    const key = String(item || '').trim();
+    if (!key) continue;
+    const lower = key.toLowerCase();
+    const name = byName.get(lower) || byId.get(lower.replace(/[\s-&]+/g, '_'));
+    if (name && !picked.includes(name)) picked.push(name);
+  }
+  if (picked.length) return picked;
+  return fallbackAll ? catalog.map((row) => row.name) : [];
 }

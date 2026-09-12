@@ -23,9 +23,11 @@ import {
 import {
   CLIENT_TRACKER_OPTION_DEFAULTS,
   CLIENT_TRACKER_OPTION_FIELDS,
+  normalizeAllowedClientStages,
   type ClientTrackerOptionKey,
   type ClientTrackerOptions,
 } from '../../lib/clientTrackerOptions';
+import { CLIENT_PIPELINE_STAGE_CHOICES } from '../../lib/clientReviewTypes';
 import {
   getDefaultSubmitToClientMailTemplate,
   listSubmitToClientMailTemplates,
@@ -47,7 +49,9 @@ type Props = {
   matchId?: string;
   batchMatchIds?: string[];
   trackerOptions?: ClientTrackerOptions;
+  allowedClientStages?: string[];
   onTrackerOptionsChange?: (options: ClientTrackerOptions) => void;
+  onAllowedClientStagesChange?: (stages: string[]) => void;
   onClose: () => void;
   onRetry: () => void;
 };
@@ -66,7 +70,9 @@ export function SubmitToClientPreviewLinkModal({
   matchId,
   batchMatchIds,
   trackerOptions,
+  allowedClientStages,
   onTrackerOptionsChange,
+  onAllowedClientStagesChange,
   onClose,
   onRetry,
 }: Props) {
@@ -79,6 +85,40 @@ export function SubmitToClientPreviewLinkModal({
   const [mailTemplates, setMailTemplates] = useState<SubmitToClientMailTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const options = trackerOptions || CLIENT_TRACKER_OPTION_DEFAULTS;
+  const selectedStages = useMemo(
+    () =>
+      normalizeAllowedClientStages(
+        allowedClientStages,
+        CLIENT_PIPELINE_STAGE_CHOICES,
+        true,
+      ),
+    [allowedClientStages],
+  );
+
+  const persistPreviewOptions = async (
+    nextOptions: ClientTrackerOptions,
+    nextStages: string[],
+  ) => {
+    if (!matchId || savingOptions) return;
+    onTrackerOptionsChange?.(nextOptions);
+    onAllowedClientStagesChange?.(nextStages);
+    setSavingOptions(true);
+    setOptionsHint('');
+    try {
+      await apiUpdateClientTracker(matchId, {
+        trackerOptions: nextOptions,
+        allowedClientStages: nextStages,
+        batchMatchIds: batchMatchIds && batchMatchIds.length > 1 ? batchMatchIds : undefined,
+      });
+      setOptionsHint('Preview options saved. The client sees these on this link.');
+    } catch (err: unknown) {
+      onTrackerOptionsChange?.(options);
+      onAllowedClientStagesChange?.(selectedStages);
+      setOptionsHint(err instanceof Error ? err.message : 'Could not save preview options.');
+    } finally {
+      setSavingOptions(false);
+    }
+  };
 
   useEffect(() => {
     setMailHint('');
@@ -218,23 +258,28 @@ export function SubmitToClientPreviewLinkModal({
   };
 
   const toggleTrackerOption = async (key: ClientTrackerOptionKey) => {
-    if (!matchId || savingOptions) return;
     const next: ClientTrackerOptions = { ...options, [key]: !options[key] };
-    onTrackerOptionsChange?.(next);
-    setSavingOptions(true);
-    setOptionsHint('');
-    try {
-      await apiUpdateClientTracker(matchId, {
-        trackerOptions: next,
-        batchMatchIds: batchMatchIds && batchMatchIds.length > 1 ? batchMatchIds : undefined,
-      });
-      setOptionsHint('Preview options saved. The client sees these on this link.');
-    } catch (err: unknown) {
-      onTrackerOptionsChange?.(options);
-      setOptionsHint(err instanceof Error ? err.message : 'Could not save preview options.');
-    } finally {
-      setSavingOptions(false);
+    const nextStages =
+      key === 'changeStage' && next.changeStage && selectedStages.length === 0
+        ? CLIENT_PIPELINE_STAGE_CHOICES.map((s) => s.name)
+        : selectedStages;
+    await persistPreviewOptions(next, nextStages);
+  };
+
+  const toggleAllowedStage = async (stageName: string) => {
+    if (!options.changeStage) return;
+    const exists = selectedStages.includes(stageName);
+    const nextStages = exists
+      ? selectedStages.filter((name) => name !== stageName)
+      : [...selectedStages, stageName];
+    if (!nextStages.length) {
+      setOptionsHint('Select at least one stage for the client.');
+      return;
     }
+    const ordered = CLIENT_PIPELINE_STAGE_CHOICES.map((s) => s.name).filter((name) =>
+      nextStages.includes(name),
+    );
+    await persistPreviewOptions(options, ordered);
   };
 
   return (
@@ -324,29 +369,90 @@ export function SubmitToClientPreviewLinkModal({
                 </p>
                 <div className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
                   {CLIENT_TRACKER_OPTION_FIELDS.map((field) => (
-                    <label
+                    <div
                       key={field.id}
-                      className="flex cursor-pointer items-start gap-2.5 rounded-lg px-1 py-1 hover:bg-slate-50"
+                      className={field.id === 'changeStage' ? 'sm:col-span-2' : undefined}
                     >
-                      <input
-                        type="checkbox"
-                        checked={options[field.id]}
-                        disabled={!matchId || savingOptions}
-                        onChange={() => void toggleTrackerOption(field.id)}
-                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span className="text-sm text-slate-800">
-                        {field.label}
-                        {field.action ? (
-                          <span className="ml-1 text-[11px] font-medium text-slate-400">[Action]</span>
-                        ) : null}
-                        {field.hint ? (
-                          <span className="mt-0.5 block text-[11px] font-normal leading-4 text-slate-500">
-                            {field.hint}
-                          </span>
-                        ) : null}
-                      </span>
-                    </label>
+                      <label className="flex cursor-pointer items-start gap-2.5 rounded-lg px-1 py-1 hover:bg-slate-50">
+                        <input
+                          type="checkbox"
+                          checked={options[field.id]}
+                          disabled={!matchId || savingOptions}
+                          onChange={() => void toggleTrackerOption(field.id)}
+                          className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="text-sm text-slate-800">
+                          {field.label}
+                          {field.action ? (
+                            <span className="ml-1 text-[11px] font-medium text-slate-400">
+                              [Action]
+                            </span>
+                          ) : null}
+                          {field.hint ? (
+                            <span className="mt-0.5 block text-[11px] font-normal leading-4 text-slate-500">
+                              {field.hint}
+                            </span>
+                          ) : null}
+                        </span>
+                      </label>
+                      {field.id === 'changeStage' && options.changeStage ? (
+                        <div className="mt-2 ml-7 rounded-xl border border-indigo-100 bg-indigo-50/40 p-3">
+                          <label className="block text-[11px] font-semibold uppercase tracking-[0.1em] text-indigo-700">
+                            Stages shown to client
+                            <select
+                              multiple
+                              size={Math.min(8, CLIENT_PIPELINE_STAGE_CHOICES.length)}
+                              disabled={!matchId || savingOptions}
+                              value={selectedStages}
+                              onChange={(event) => {
+                                const values = Array.from(event.target.selectedOptions).map(
+                                  (opt) => opt.value,
+                                );
+                                if (!values.length) {
+                                  setOptionsHint('Select at least one stage for the client.');
+                                  return;
+                                }
+                                const ordered = CLIENT_PIPELINE_STAGE_CHOICES.map((s) => s.name).filter(
+                                  (name) => values.includes(name),
+                                );
+                                void persistPreviewOptions(options, ordered);
+                              }}
+                              className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm text-slate-800 outline-none ring-indigo-200 focus:ring-2"
+                            >
+                              {CLIENT_PIPELINE_STAGE_CHOICES.map((stage) => (
+                                <option key={stage.id} value={stage.name}>
+                                  {stage.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {CLIENT_PIPELINE_STAGE_CHOICES.map((stage) => {
+                              const checked = selectedStages.includes(stage.name);
+                              return (
+                                <button
+                                  key={stage.id}
+                                  type="button"
+                                  disabled={!matchId || savingOptions}
+                                  onClick={() => void toggleAllowedStage(stage.name)}
+                                  className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 transition disabled:opacity-60 ${
+                                    checked
+                                      ? 'bg-indigo-600 text-white ring-indigo-600'
+                                      : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  {stage.name}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                            Hold Ctrl/Cmd to multi-select in the list, or tap the chips. Only
+                            selected stages appear in the client Stage dropdown.
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
                   ))}
                 </div>
                 {optionsHint ? (

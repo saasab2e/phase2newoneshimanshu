@@ -8049,17 +8049,19 @@ export const apiUpdateClientTracker = async (
   matchId: string,
   payload: {
     trackerOptions: Record<string, boolean>;
+    allowedClientStages?: string[];
     batchMatchIds?: string[];
   },
 ) => {
-  return apiFetch<{ matchId: string; trackerOptions: Record<string, boolean> }>(
-    `/matches/${matchId}/client-tracker`,
-    {
-      method: 'PATCH',
-      body: payload,
-      auth: true,
-    },
-  );
+  return apiFetch<{
+    matchId: string;
+    trackerOptions: Record<string, boolean>;
+    allowedClientStages?: string[];
+  }>(`/matches/${matchId}/client-tracker`, {
+    method: 'PATCH',
+    body: payload,
+    auth: true,
+  });
 };
 
 export const apiRejectMatch = async (
