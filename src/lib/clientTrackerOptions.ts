@@ -39,7 +39,7 @@ export const CLIENT_TRACKER_OPTION_LEGACY_DEFAULTS: ClientTrackerOptions = {
   showNotes: false,
   showScore: false,
   addRemarks: true,
-  changeStage: false,
+  changeStage: true,
   attachDocument: true,
   downloadFiles: false,
 };
@@ -62,7 +62,8 @@ export const CLIENT_TRACKER_OPTION_FIELDS: Array<{
     id: 'changeStage',
     label: 'Change stage',
     action: true,
-    hint: 'Shown on Client tab only — does not move pipeline stage',
+    hint:
+      'Client picks Applied, Shortlisted by Client, Feedback Pending, Joined, etc. Shown in the preview table and on the Client tab (does not move CRM pipeline)',
   },
   { id: 'attachDocument', label: 'Attach document', action: true },
   { id: 'downloadFiles', label: 'Download files' },
